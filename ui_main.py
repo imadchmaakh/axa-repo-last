@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy, QSpacerItem
 )
 from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtGui import QPixmap, QFont, QIcon
+from PyQt5.QtGui import QPixmap, QFont, QIcon, QFontDatabase
 
 class MainUI(QWidget):
     def __init__(self):
@@ -15,6 +15,9 @@ class MainUI(QWidget):
         self.resize(1400, 900)
         self.setMinimumSize(1200, 800)
         self.setLayoutDirection(Qt.RightToLeft)
+
+        # Setup Arabic font support
+        self._setup_arabic_fonts()
 
         # Custom app/taskbar icon (no default Python icon)
         self.setWindowIcon(QIcon("assets/logo/app_icon.png"))
@@ -85,6 +88,33 @@ class MainUI(QWidget):
         except:
             pass  # Icons are optional
 
+    def _setup_arabic_fonts(self):
+        """Setup proper Arabic font support"""
+        # Try to load system Arabic fonts
+        arabic_fonts = [
+            "Tahoma",           # Good Arabic support
+            "Arial Unicode MS", # Comprehensive Unicode support
+            "Segoe UI",         # Windows default with Arabic
+            "DejaVu Sans",      # Linux Arabic support
+            "Noto Sans Arabic", # Google Noto Arabic
+            "Arial"             # Fallback
+        ]
+        
+        self.arabic_font = None
+        font_db = QFontDatabase()
+        available_fonts = font_db.families()
+        
+        for font_name in arabic_fonts:
+            if font_name in available_fonts:
+                self.arabic_font = QFont(font_name, 11)
+                self.arabic_font.setStyleHint(QFont.System)
+                break
+        
+        if not self.arabic_font:
+            self.arabic_font = QFont("Arial", 11)
+        
+        # Set application-wide font
+        self.setFont(self.arabic_font)
     def resizeEvent(self, event):
         """Handle window resize events to maintain responsive layout"""
         super().resizeEvent(event)
@@ -118,26 +148,28 @@ class MainUI(QWidget):
         # Barcode field - bigger and more prominent
         self.in_barcode = QLineEdit()
         self.in_barcode.setObjectName("barcode_field")
-        self.in_barcode.setPlaceholderText("الباركود (8 أو 12 أو 13 رقمًا)")
+        self.in_barcode.setPlaceholderText("مسح الباركود أو إدخال يدوي (EAN-13, UPC-A, EAN-8)")
         self.in_barcode.setMinimumHeight(50)
+        self.in_barcode.setMinimumWidth(300)
         self.in_barcode.setClearButtonEnabled(True)
-        self.in_barcode.setFont(QFont("Arial", 14, QFont.Bold))
+        barcode_font = QFont("Courier New", 14, QFont.Bold)  # Monospace for barcodes
+        self.in_barcode.setFont(barcode_font)
 
         # Find button
         self.btn_bill_find = QPushButton("بحث")
         self.btn_bill_find.setMinimumHeight(50)
         self.btn_bill_find.setMinimumWidth(80)
 
-        # Camera scan button
-        self.btn_scan_camera = QPushButton("مسح بالكاميرا")
-        self.btn_scan_camera.setObjectName("secondary")
-        self.btn_scan_camera.setMinimumHeight(50)
-        self.btn_scan_camera.setMinimumWidth(120)
+        # Hardware scanner info button
+        self.btn_scanner_info = QPushButton("معلومات الماسح")
+        self.btn_scanner_info.setObjectName("secondary")
+        self.btn_scanner_info.setMinimumHeight(50)
+        self.btn_scanner_info.setMinimumWidth(120)
 
         row1.addWidget(QLabel("الباركود:"), 0)
         row1.addWidget(self.in_barcode, 3)
         row1.addWidget(self.btn_bill_find, 0)
-        row1.addWidget(self.btn_scan_camera, 0)
+        row1.addWidget(self.btn_scanner_info, 0)
         input_layout.addLayout(row1)
 
         # Second row - Product name (bigger and more prominent)
@@ -148,7 +180,8 @@ class MainUI(QWidget):
         self.in_name.setObjectName("name_field")
         self.in_name.setPlaceholderText("اسم المنتج")
         self.in_name.setMinimumHeight(50)
-        name_font = QFont("Arial", 14, QFont.Bold)
+        self.in_name.setMinimumWidth(400)
+        name_font = QFont(self.arabic_font.family(), 14, QFont.Bold)
         self.in_name.setFont(name_font)
 
         row2.addWidget(QLabel("اسم المنتج:"), 0)
@@ -229,10 +262,11 @@ class MainUI(QWidget):
         
         # Hide ID column
         self.tbl_bill.horizontalHeader().setSectionHidden(5, True)
+        # Hide barcode column for cleaner bill display
+        self.tbl_bill.horizontalHeader().setSectionHidden(0, True)
         
         # Set responsive column behavior
         header = self.tbl_bill.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # Barcode
         header.setSectionResizeMode(1, QHeaderView.Stretch)          # Name (stretches)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Price
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # Quantity
@@ -260,7 +294,7 @@ class MainUI(QWidget):
         
         self.lbl_total = QLabel("الإجمالي: 0.00")
         self.lbl_total.setObjectName("KPI")
-        total_font = QFont("Arial", 16, QFont.Bold)
+        total_font = QFont(self.arabic_font.family(), 16, QFont.Bold)
         self.lbl_total.setFont(total_font)
         
         footer.addWidget(self.lbl_total)
@@ -269,7 +303,7 @@ class MainUI(QWidget):
         self.tabs.addTab(tab, "الفاتورة الحالية")
 
         # Font for bill table names
-        self._bill_name_font = QFont("Arial", 13, QFont.Bold)
+        self._bill_name_font = QFont(self.arabic_font.family(), 13, QFont.Bold)
 
     # ---------- Stock Tab ----------
     def _build_stock_tab(self):
@@ -288,12 +322,16 @@ class MainUI(QWidget):
         self.stk_name = QLineEdit()
         self.stk_name.setPlaceholderText("اسم الصنف")
         self.stk_name.setMinimumHeight(45)
-        name_font = QFont("Arial", 12, QFont.Bold)
+        self.stk_name.setMinimumWidth(300)
+        name_font = QFont(self.arabic_font.family(), 12, QFont.Bold)
         self.stk_name.setFont(name_font)
 
         self.stk_barcode = QLineEdit()
-        self.stk_barcode.setPlaceholderText("الباركود (8 أو 12 أو 13 رقمًا)")
+        self.stk_barcode.setPlaceholderText("الباركود (EAN-13, UPC-A, EAN-8)")
         self.stk_barcode.setMinimumHeight(45)
+        self.stk_barcode.setMinimumWidth(200)
+        barcode_font = QFont("Courier New", 12, QFont.Bold)
+        self.stk_barcode.setFont(barcode_font)
 
         row1.addWidget(QLabel("اسم الصنف:"), 0)
         row1.addWidget(self.stk_name, 2)
@@ -427,6 +465,9 @@ class MainUI(QWidget):
         self.tbl_stock.setAlternatingRowColors(True)
         self.tbl_stock.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
+        # Disable auto-selection on double-click for better editing experience
+        self.tbl_stock.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        
         table_layout.addWidget(self.tbl_stock)
         outer.addWidget(table_group)
 
@@ -443,19 +484,36 @@ class MainUI(QWidget):
         kpi_layout = QHBoxLayout(kpi_group)
         kpi_layout.setSpacing(20)
 
+        # First row of KPIs
+        kpi_row1 = QHBoxLayout()
+        kpi_row1.setSpacing(20)
+        
         self.lbl_total_sales = QLabel("إجمالي المبيعات: 0.00")
         self.lbl_total_sales.setObjectName("KPI")
+        self.lbl_total_sales.setMinimumWidth(200)
         
         self.lbl_today_sales = QLabel("مبيعات اليوم: 0.00")
         self.lbl_today_sales.setObjectName("KPI")
+        self.lbl_today_sales.setMinimumWidth(200)
+        
+        kpi_row1.addWidget(self.lbl_total_sales)
+        kpi_row1.addWidget(self.lbl_today_sales)
+        kpi_row1.addStretch()
+        kpi_layout.addLayout(kpi_row1)
+        
+        # Second row for latest sale (separate line to prevent overlap)
+        kpi_row2 = QHBoxLayout()
+        kpi_row2.setSpacing(20)
         
         self.lbl_latest_sale = QLabel("آخر عملية: -")
         self.lbl_latest_sale.setObjectName("KPI")
+        self.lbl_latest_sale.setMinimumWidth(400)
+        self.lbl_latest_sale.setWordWrap(True)  # Allow text wrapping
 
-        kpi_layout.addWidget(self.lbl_total_sales)
-        kpi_layout.addWidget(self.lbl_today_sales)
-        kpi_layout.addWidget(self.lbl_latest_sale)
-        kpi_layout.addStretch()
+        kpi_row2.addWidget(self.lbl_latest_sale)
+        kpi_row2.addStretch()
+        kpi_layout.addLayout(kpi_row2)
+        
         outer.addWidget(kpi_group)
 
         # Sales table
@@ -470,7 +528,7 @@ class MainUI(QWidget):
         # Set responsive behavior
         header = self.tbl_sales.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # Fixed width for datetime
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         
         self.tbl_sales.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -510,19 +568,19 @@ class MainUI(QWidget):
 
         self.tbl_sale_details = QTableWidget(0, 6)
         self.tbl_sale_details.setHorizontalHeaderLabels([
-            "ID Det", "الاسم", "الباركود", "الكمية", "سعر الوحدة", "الإجمالي"
+            "ID Det", "الاسم", "الكمية", "سعر الوحدة", "الإجمالي", "الباركود"
         ])
         
-        # Hide ID column
+        # Hide ID and barcode columns for cleaner display
         self.tbl_sale_details.horizontalHeader().setSectionHidden(0, True)
+        self.tbl_sale_details.horizontalHeader().setSectionHidden(5, True)
         
         # Set responsive behavior
         header2 = self.tbl_sale_details.horizontalHeader()
         header2.setSectionResizeMode(1, QHeaderView.Stretch)          # Name stretches
-        header2.setSectionResizeMode(2, QHeaderView.ResizeToContents) # Barcode
-        header2.setSectionResizeMode(3, QHeaderView.ResizeToContents) # Quantity
-        header2.setSectionResizeMode(4, QHeaderView.ResizeToContents) # Price each
-        header2.setSectionResizeMode(5, QHeaderView.ResizeToContents) # Total
+        header2.setSectionResizeMode(2, QHeaderView.ResizeToContents) # Quantity
+        header2.setSectionResizeMode(3, QHeaderView.ResizeToContents) # Price each
+        header2.setSectionResizeMode(4, QHeaderView.ResizeToContents) # Total
         
         self.tbl_sale_details.setAlternatingRowColors(True)
         self.tbl_sale_details.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)

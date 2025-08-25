@@ -53,7 +53,7 @@ class Controller(MainUI):
         self.btn_bill_remove.clicked.connect(self._bill_remove_selected)
         self.btn_bill_save.clicked.connect(self._bill_save)
         self.btn_print_bill.clicked.connect(self._bill_print)
-        self.btn_scan_camera.clicked.connect(self._scan_via_camera)
+        self.btn_scanner_info.clicked.connect(self._show_scanner_info)
 
         # Hardware scanner support: scanners "type" then send Enter.
         self.in_barcode.returnPressed.connect(self._handle_scanned_barcode)
@@ -66,7 +66,7 @@ class Controller(MainUI):
         self.btn_stk_update.clicked.connect(self._stock_update)
         self.btn_stk_delete.clicked.connect(self._stock_delete)
         self.btn_stk_refresh.clicked.connect(self._load_stock_table)
-        self.tbl_stock.itemSelectionChanged.connect(self._stock_fill_form_from_selection)
+        self.tbl_stock.clicked.connect(self._stock_fill_form_from_selection)
 
         # Sales
         self.btn_sale_refresh.clicked.connect(self._load_sales_tab)
@@ -109,10 +109,10 @@ class Controller(MainUI):
         try:
             # Update all tables to fit content properly
             tables = [
-                (self.tbl_bill, [0, 2, 3, 4]),  # Resize specific columns, let name stretch
+                (self.tbl_bill, [2, 3, 4]),  # Resize specific columns, let name stretch (barcode hidden)
                 (self.tbl_stock, [2, 3, 4, 5, 6, 8]),  # Let name stretch
-                (self.tbl_sales, [0, 2]),  # Let date stretch
-                (self.tbl_sale_details, [2, 3, 4, 5])  # Let name stretch
+                (self.tbl_sales, [0, 1, 2]),  # All columns resize to content
+                (self.tbl_sale_details, [2, 3, 4])  # Let name stretch (barcode hidden)
             ]
             
             for table, resize_cols in tables:
@@ -243,7 +243,7 @@ class Controller(MainUI):
             barcode = self.stk_barcode.text().strip()
             if barcode:
                 if not is_valid_barcode(barcode):
-                    self.msg("خطأ", "الباركود يجب أن يكون أرقامًا بطول 8 أو 12 أو 13.")
+                    self.msg("خطأ", "الباركود يجب أن يكون أرقامًا صحيحة (EAN-13: 13 رقم، UPC-A: 12 رقم، EAN-8: 8 أرقام)")
                     return
             cat_id = self.stk_cat.currentData()
             price = float(self.stk_price.value())
@@ -271,7 +271,7 @@ class Controller(MainUI):
             barcode = self.stk_barcode.text().strip()
             if barcode:
                 if not is_valid_barcode(barcode):
-                    self.msg("خطأ", "الباركود يجب أن يكون أرقامًا بطول 8 أو 12 أو 13.")
+                    self.msg("خطأ", "الباركود يجب أن يكون أرقامًا صحيحة (EAN-13: 13 رقم، UPC-A: 12 رقم، EAN-8: 8 أرقام)")
                     return
             cat_id = self.stk_cat.currentData()
             price = float(self.stk_price.value())
@@ -341,7 +341,7 @@ class Controller(MainUI):
             
             # Name with larger, bold font
             name_item = QTableWidgetItem(r["name"])
-            name_font = QFont("Arial", 13, QFont.Bold)
+            name_font = QFont(self.arabic_font.family(), 13, QFont.Bold)
             name_item.setFont(name_font)
             self.tbl_stock.setItem(row, 1, name_item)
 
@@ -352,10 +352,12 @@ class Controller(MainUI):
             self.tbl_stock.setItem(row, 3, QTableWidgetItem(r["barcode"] or ""))
             
             # Price
-            self.tbl_stock.setItem(row, 4, QTableWidgetItem(f"{r['price']:.2f}"))
+            price_text = f"{r['price']:.0f}" if r['price'] == int(r['price']) else f"{r['price']:.2f}"
+            self.tbl_stock.setItem(row, 4, QTableWidgetItem(price_text))
             
             # Stock count
-            stock_item = QTableWidgetItem(f"{r['stock_count']:.1f}")
+            stock_text = f"{r['stock_count']:.0f}" if r['stock_count'] == int(r['stock_count']) else f"{r['stock_count']:.1f}"
+            stock_item = QTableWidgetItem(stock_text)
             if (r["stock_count"] or 0) <= 0:
                 stock_item.setForeground(Qt.red)
             self.tbl_stock.setItem(row, 5, stock_item)
@@ -394,7 +396,7 @@ class Controller(MainUI):
             return
             
         if not is_valid_barcode(barcode):
-            self.msg("خطأ", "الباركود يجب أن يكون أرقامًا بطول 8 أو 12 أو 13.")
+            self.msg("خطأ", "الباركود يجب أن يكون أرقامًا صحيحة (EAN-13: 13 رقم، UPC-A: 12 رقم، EAN-8: 8 أرقام)")
             self.in_barcode.selectAll()
             self.in_barcode.setFocus()
             return
@@ -416,6 +418,30 @@ class Controller(MainUI):
             self.in_barcode.selectAll()
             self.in_barcode.setFocus()
 
+    def _show_scanner_info(self):
+        """Show information about barcode scanner setup"""
+        info_text = """
+معلومات ماسح الباركود:
+
+• يدعم النظام مواسح الباركود USB (نوع لوحة المفاتيح)
+• الأنواع المدعومة:
+  - EAN-13 (13 رقم)
+  - UPC-A (12 رقم) 
+  - EAN-8 (8 أرقام)
+
+• طريقة الاستخدام:
+  1. وجه الماسح نحو الباركود
+  2. اضغط الزناد أو الزر
+  3. سيظهر الرقم في حقل الباركود تلقائيًا
+  4. اضغط Enter أو انقر "بحث" للعثور على المنتج
+
+• للإضافة السريعة:
+  - بعد المسح، سيتم البحث تلقائيًا
+  - إذا وُجد المنتج، سيُضاف للفاتورة مباشرة
+
+ملاحظة: تأكد من أن الماسح مضبوط على وضع "لوحة المفاتيح"
+        """
+        QMessageBox.information(self, "معلومات ماسح الباركود", info_text)
     def _bill_find(self):
         """Find item by barcode and populate fields"""
         barcode = self.in_barcode.text().strip()
@@ -424,7 +450,7 @@ class Controller(MainUI):
             return
             
         if not is_valid_barcode(barcode):
-            self.msg("خطأ", "الباركود يجب أن يكون أرقامًا بطول 8 أو 12 أو 13.")
+            self.msg("خطأ", "الباركود يجب أن يكون أرقامًا صحيحة (EAN-13: 13 رقم، UPC-A: 12 رقم، EAN-8: 8 أرقام)")
             return
             
         item = models.get_item_by_barcode(barcode)
@@ -441,7 +467,7 @@ class Controller(MainUI):
         """Add item to current bill with real-time stock deduction"""
         barcode = self.in_barcode.text().strip()
         if barcode and not is_valid_barcode(barcode):
-            self.msg("خطأ", "الباركود يجب أن يكون أرقامًا بطول 8 أو 12 أو 13.")
+            self.msg("خطأ", "الباركود يجب أن يكون أرقامًا صحيحة (EAN-13: 13 رقم، UPC-A: 12 رقم، EAN-8: 8 أرقام)")
             return
             
         name = self.in_name.text().strip()
@@ -463,7 +489,7 @@ class Controller(MainUI):
         if item and (item["stock_count"] or 0) < qty:
             reply = QMessageBox.question(
                 self, "تنبيه المخزون", 
-                f"الكمية المطلوبة ({qty}) أكبر من المتاح ({item['stock_count'] or 0}).\n"
+                f"الكمية المطلوبة ({qty:.0f if qty == int(qty) else qty}) أكبر من المتاح ({item['stock_count']:.0f if item['stock_count'] == int(item['stock_count']) else item['stock_count']}).\n"
                 "هل تريد المتابعة؟ سيصبح المخزون سالبًا.",
                 QMessageBox.Yes | QMessageBox.No
             )
@@ -483,9 +509,13 @@ class Controller(MainUI):
         name_item.setFont(self._bill_name_font)
         self.tbl_bill.setItem(row, 1, name_item)
 
-        self.tbl_bill.setItem(row, 2, QTableWidgetItem(f"{price_each:.2f} {self.currency}"))
-        self.tbl_bill.setItem(row, 3, QTableWidgetItem(f"{qty}"))
-        self.tbl_bill.setItem(row, 4, QTableWidgetItem(f"{subtotal:.2f} {self.currency}"))
+        price_text = f"{price_each:.0f}" if price_each == int(price_each) else f"{price_each:.2f}"
+        qty_text = f"{qty:.0f}" if qty == int(qty) else f"{qty:.1f}"
+        subtotal_text = f"{subtotal:.0f}" if subtotal == int(subtotal) else f"{subtotal:.2f}"
+        
+        self.tbl_bill.setItem(row, 2, QTableWidgetItem(f"{price_text} {self.currency}"))
+        self.tbl_bill.setItem(row, 3, QTableWidgetItem(qty_text))
+        self.tbl_bill.setItem(row, 4, QTableWidgetItem(f"{subtotal_text} {self.currency}"))
         self.tbl_bill.setItem(row, 5, QTableWidgetItem(str(item_id) if item_id else ""))
 
         # Set row height for better readability
@@ -550,7 +580,8 @@ class Controller(MainUI):
                 except (ValueError, IndexError):
                     pass
                     
-        self.lbl_total.setText(f"الإجمالي: {total:.2f} {self.currency}")
+        total_text = f"{total:.0f}" if total == int(total) else f"{total:.2f}"
+        self.lbl_total.setText(f"الإجمالي: {total_text} {self.currency}")
         self._update_table_responsiveness()
 
     def _bill_save(self):
@@ -624,13 +655,11 @@ class Controller(MainUI):
         total = 0.0
         
         for r in range(self.tbl_bill.rowCount()):
-            barcode_item = self.tbl_bill.item(r, 0)
             name_item = self.tbl_bill.item(r, 1)
             price_item = self.tbl_bill.item(r, 2)
             qty_item = self.tbl_bill.item(r, 3)
             subtotal_item = self.tbl_bill.item(r, 4)
             
-            barcode = barcode_item.text() if barcode_item else ""
             name = name_item.text() if name_item else ""
             price_each = float(price_item.text().split()[0]) if price_item else 0.0
             qty = float(qty_item.text()) if qty_item else 0.0
@@ -638,15 +667,22 @@ class Controller(MainUI):
             
             total += subtotal
             
+            # Format numbers without unnecessary decimals
+            price_text = f"{price_each:.0f}" if price_each == int(price_each) else f"{price_each:.2f}"
+            qty_text = f"{qty:.0f}" if qty == int(qty) else f"{qty:.1f}"
+            subtotal_text = f"{subtotal:.0f}" if subtotal == int(subtotal) else f"{subtotal:.2f}"
+            
             rows_html += f"""
             <tr>
-                <td>{barcode}</td>
                 <td style="font-size:14pt;font-weight:600;">{name}</td>
-                <td>{qty}</td>
-                <td>{price_each:.2f} {self.currency}</td>
-                <td>{subtotal:.2f} {self.currency}</td>
+                <td>{qty_text}</td>
+                <td>{price_text} {self.currency}</td>
+                <td>{subtotal_text} {self.currency}</td>
             </tr>
             """
+
+        # Format total without unnecessary decimals
+        total_text = f"{total:.0f}" if total == int(total) else f"{total:.2f}"
 
         # Create HTML invoice
         html = f"""
@@ -711,7 +747,6 @@ class Controller(MainUI):
             <table>
                 <thead>
                     <tr>
-                        <th>الباركود</th>
                         <th>الاسم</th>
                         <th>الكمية</th>
                         <th>سعر الوحدة</th>
@@ -723,8 +758,8 @@ class Controller(MainUI):
                 </tbody>
                 <tfoot>
                     <tr class="total-row">
-                        <th colspan="4" style="text-align:left;">الإجمالي النهائي</th>
-                        <th>{total:.2f} {self.currency}</th>
+                        <th colspan="3" style="text-align:left;">الإجمالي النهائي</th>
+                        <th>{total_text} {self.currency}</th>
                     </tr>
                 </tfoot>
             </table>
@@ -752,12 +787,16 @@ class Controller(MainUI):
         today_sales = models.get_sales_summary_today()
         latest = models.get_latest_sale()
         
-        self.lbl_total_sales.setText(f"إجمالي المبيعات: {total_sales:.2f} {self.currency}")
-        self.lbl_today_sales.setText(f"مبيعات اليوم: {today_sales:.2f} {self.currency}")
+        total_text = f"{total_sales:.0f}" if total_sales == int(total_sales) else f"{total_sales:.2f}"
+        today_text = f"{today_sales:.0f}" if today_sales == int(today_sales) else f"{today_sales:.2f}"
+        
+        self.lbl_total_sales.setText(f"إجمالي المبيعات: {total_text} {self.currency}")
+        self.lbl_today_sales.setText(f"مبيعات اليوم: {today_text} {self.currency}")
         
         if latest:
+            latest_total_text = f"{latest['total_price']:.0f}" if latest['total_price'] == int(latest['total_price']) else f"{latest['total_price']:.2f}"
             self.lbl_latest_sale.setText(
-                f"آخر عملية: #{latest['id']} - {latest['datetime']} - {latest['total_price']:.2f} {self.currency}"
+                f"آخر عملية: #{latest['id']} - {latest['datetime']} - {latest_total_text} {self.currency}"
             )
         else:
             self.lbl_latest_sale.setText("آخر عملية: -")
@@ -771,7 +810,8 @@ class Controller(MainUI):
             self.tbl_sales.insertRow(row)
             self.tbl_sales.setItem(row, 0, QTableWidgetItem(str(s["id"])))
             self.tbl_sales.setItem(row, 1, QTableWidgetItem(s["datetime"]))
-            self.tbl_sales.setItem(row, 2, QTableWidgetItem(f"{s['total_price']:.2f} {self.currency}"))
+            price_text = f"{s['total_price']:.0f}" if s['total_price'] == int(s['total_price']) else f"{s['total_price']:.2f}"
+            self.tbl_sales.setItem(row, 2, QTableWidgetItem(f"{price_text} {self.currency}"))
             self.tbl_sales.setRowHeight(row, 35)
 
         # Clear details table
@@ -796,14 +836,19 @@ class Controller(MainUI):
             
             # Name with larger font
             name_item = QTableWidgetItem(d["name"])
-            name_font = QFont("Arial", 13, QFont.Bold)
+            name_font = QFont(self.arabic_font.family(), 13, QFont.Bold)
             name_item.setFont(name_font)
             self.tbl_sale_details.setItem(r, 1, name_item)
             
-            self.tbl_sale_details.setItem(r, 2, QTableWidgetItem(d["barcode"] or ""))
-            self.tbl_sale_details.setItem(r, 3, QTableWidgetItem(f"{d['quantity']}"))
-            self.tbl_sale_details.setItem(r, 4, QTableWidgetItem(f"{d['price_each']:.2f} {self.currency}"))
-            self.tbl_sale_details.setItem(r, 5, QTableWidgetItem(f"{d['subtotal']:.2f} {self.currency}"))
+            # Format numbers without unnecessary decimals
+            qty_text = f"{d['quantity']:.0f}" if d['quantity'] == int(d['quantity']) else f"{d['quantity']:.1f}"
+            price_text = f"{d['price_each']:.0f}" if d['price_each'] == int(d['price_each']) else f"{d['price_each']:.2f}"
+            subtotal_text = f"{d['subtotal']:.0f}" if d['subtotal'] == int(d['subtotal']) else f"{d['subtotal']:.2f}"
+            
+            self.tbl_sale_details.setItem(r, 2, QTableWidgetItem(qty_text))
+            self.tbl_sale_details.setItem(r, 3, QTableWidgetItem(f"{price_text} {self.currency}"))
+            self.tbl_sale_details.setItem(r, 4, QTableWidgetItem(f"{subtotal_text} {self.currency}"))
+            self.tbl_sale_details.setItem(r, 5, QTableWidgetItem(d["barcode"] or ""))  # Hidden barcode column
             
             self.tbl_sale_details.setRowHeight(r, 40)
             
@@ -832,59 +877,6 @@ class Controller(MainUI):
             except Exception as e:
                 QMessageBox.warning(self, "خطأ", f"تعذر حذف العملية:\n{e}")
 
-    # ---------- Camera Barcode Scanning ----------
-    def _scan_via_camera(self):
-        """Scan barcode using camera (optional feature)"""
-        if cv2 is None:
-            QMessageBox.warning(self, "المسح بالكاميرا", "OpenCV غير مثبت. نفّذ:\npy -m pip install opencv-python")
-            return
-            
-        if zbar_decode is None:
-            QMessageBox.warning(
-                self, "المسح بالكاميرا", 
-                "المكتبة pyzbar غير متاحة أو ZBar غير مثبت.\n"
-                "يمكنك استخدام ماسح USB (لوحة المفاتيح)، "
-                "أو تثبيت pyzbar + ZBar للمسح بالكاميرا."
-            )
-            return
-            
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            QMessageBox.warning(self, "الكاميرا", "تعذر فتح الكاميرا.")
-            return
-            
-        QMessageBox.information(
-            self, "المسح", 
-            "سيتم فتح الكاميرا. وجّه الباركود، وسيتم تعبئة الحقل تلقائيًا.\nاضغط Q للإلغاء."
-        )
-        
-        found_code = None
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-                
-            codes = zbar_decode(frame)
-            for c in codes:
-                data = c.data.decode("utf-8")
-                if data and is_valid_barcode(data):
-                    found_code = data
-                    break
-                    
-            cv2.imshow("Scan Barcode - Press Q to cancel", frame)
-            if found_code:
-                break
-                
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
-                break
-                
-        cap.release()
-        cv2.destroyAllWindows()
-        
-        if found_code:
-            self.in_barcode.setText(found_code)
-            self._handle_scanned_barcode()
 
     # ---------- Utility Methods ----------
     def _selected_row(self, table):

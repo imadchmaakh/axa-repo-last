@@ -21,10 +21,33 @@ def setup_application():
     app.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     app.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     
-    # Set default font for better Arabic text rendering
-    font = QFont("Segoe UI", 11)
-    font.setStyleHint(QFont.System)
-    app.setFont(font)
+    # Enhanced Arabic font support
+    from PyQt5.QtGui import QFontDatabase
+    
+    # Try to load system Arabic fonts
+    arabic_fonts = [
+        "Tahoma",           # Good Arabic support
+        "Arial Unicode MS", # Comprehensive Unicode support
+        "Segoe UI",         # Windows default with Arabic
+        "DejaVu Sans",      # Linux Arabic support
+        "Noto Sans Arabic", # Google Noto Arabic
+        "Arial"             # Fallback
+    ]
+    
+    font_db = QFontDatabase()
+    available_fonts = font_db.families()
+    
+    selected_font = None
+    for font_name in arabic_fonts:
+        if font_name in available_fonts:
+            selected_font = QFont(font_name, 11)
+            selected_font.setStyleHint(QFont.System)
+            break
+    
+    if not selected_font:
+        selected_font = QFont("Arial", 11)
+    
+    app.setFont(selected_font)
     
     # Apply dark theme stylesheet
     app.setStyleSheet(APP_QSS)

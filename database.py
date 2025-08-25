@@ -4,12 +4,16 @@ import os
 DB_NAME = "store.db"
 
 def get_connection():
-    """Get database connection with proper configuration"""
-    conn = sqlite3.connect(DB_NAME)
+    """
+    Get database connection with proper configuration and timeout handling.
+    - timeout=10 sec: Prevents 'database is locked' errors during fast UI operations.
+    - WAL mode: Better concurrency for read/write.
+    """
+    conn = sqlite3.connect(DB_NAME, timeout=10)  # Added timeout for stability
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
-    conn.execute("PRAGMA journal_mode = WAL;")  # Better performance
-    conn.execute("PRAGMA synchronous = NORMAL;")  # Better performance
+    conn.execute("PRAGMA journal_mode = WAL;")       # Allows concurrent reads during writes
+    conn.execute("PRAGMA synchronous = NORMAL;")     # Good balance of safety and performance
     return conn
 
 def _table_has_item_fk_cascade_on_sale_details(conn):
@@ -48,7 +52,7 @@ def setup_database():
     );
     """)
 
-    # Items/Products table
+    # Items table
     cur.execute("""
     CREATE TABLE IF NOT EXISTS items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,19 +88,18 @@ def setup_database():
         price_each REAL NOT NULL,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
-        FOREIGN KEY (item_id) REFERENCES items(id) -- Will be migrated to CASCADE below if needed
+        FOREIGN KEY (item_id) REFERENCES items(id) -- Will migrate to CASCADE
     );
     """)
 
     conn.commit()
 
-    # Migrate sale_details.item_id to ON DELETE CASCADE if needed
+    # Ensure CASCADE for item_id in sale_details
     if not _table_has_item_fk_cascade_on_sale_details(conn):
         print("Migrating sale_details table to add CASCADE foreign key...")
         cur.execute("PRAGMA foreign_keys = OFF;")
         conn.commit()
-        
-        # Create new table with CASCADE
+
         cur.execute("""
         CREATE TABLE IF NOT EXISTS _sale_details_new (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,25 +112,23 @@ def setup_database():
             FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
         );
         """)
-        
+
         # Copy data
         cur.execute("""
         INSERT INTO _sale_details_new (id, sale_id, item_id, quantity, price_each, created_at)
-        SELECT id, sale_id, item_id, quantity, price_each, 
-               COALESCE(created_at, datetime('now')) as created_at 
+        SELECT id, sale_id, item_id, quantity, price_each, COALESCE(created_at, datetime('now'))
         FROM sale_details;
         """)
-        
-        # Replace table
+
         cur.execute("DROP TABLE sale_details;")
         cur.execute("ALTER TABLE _sale_details_new RENAME TO sale_details;")
         conn.commit()
-        
+
         cur.execute("PRAGMA foreign_keys = ON;")
         conn.commit()
         print("Migration completed successfully.")
 
-    # Create indexes for better performance
+    # Create indexes for performance
     indexes = [
         "CREATE INDEX IF NOT EXISTS idx_items_barcode ON items(barcode);",
         "CREATE INDEX IF NOT EXISTS idx_items_category ON items(category_id);",
@@ -136,32 +137,19 @@ def setup_database():
         "CREATE INDEX IF NOT EXISTS idx_sale_details_sale_id ON sale_details(sale_id);",
         "CREATE INDEX IF NOT EXISTS idx_sale_details_item_id ON sale_details(item_id);",
     ]
-    
-    for index_sql in indexes:
-        cur.execute(index_sql)
-    
+    for sql in indexes:
+        cur.execute(sql)
+
     conn.commit()
 
-    # Seed initial data if this is a new database
+    # Seed data if new DB
     if must_seed:
         print("Seeding initial data...")
-        # Add default category
         cur.execute("INSERT OR IGNORE INTO categories(name) VALUES (?)", ("غير مصنّف",))
-        
-        # Add some sample categories
-        sample_categories = [
-            "مواد غذائية",
-            "مشروبات",
-            "منظفات",
-            "أدوات منزلية",
-            "قرطاسية"
-        ]
-        
-        for cat in sample_categories:
+        for cat in ["مواد غذائية", "مشروبات", "منظفات", "أدوات منزلية", "قرطاسية"]:
             cur.execute("INSERT OR IGNORE INTO categories(name) VALUES (?)", (cat,))
-        
         conn.commit()
-        print("Initial data seeded successfully.")
+        print("Initial data seeded.")
 
     conn.close()
     print("Database setup completed successfully.")
@@ -170,36 +158,20 @@ def backup_database(backup_path=None):
     """Create a backup of the database"""
     if not backup_path:
         from datetime import datetime
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_path = f"store_backup_{timestamp}.db"
-    
+        backup_path = f"store_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
     import shutil
     shutil.copy2(DB_NAME, backup_path)
     return backup_path
 
 def get_database_stats():
-    """Get database statistics"""
+    """Return stats: table counts & DB size"""
     conn = get_connection()
     cur = conn.cursor()
-    
     stats = {}
-    
-    # Count records in each table
-    tables = ['categories', 'items', 'sales', 'sale_details']
-    for table in tables:
+    for table in ['categories', 'items', 'sales', 'sale_details']:
         cur.execute(f"SELECT COUNT(*) FROM {table}")
         stats[f"{table}_count"] = cur.fetchone()[0]
-    
-    # Database file size
     stats['db_size_bytes'] = os.path.getsize(DB_NAME) if os.path.exists(DB_NAME) else 0
-    stats['db_size_mb'] = round(stats['db_size_bytes'] / (1024 * 1024), 2)
-    
+    stats['db_size_mb'] = round(stats['db_size_bytes'] / (1024*1024), 2)
     conn.close()
     return stats
-
-if __name__ == "__main__":
-    setup_database()
-    stats = get_database_stats()
-    print("Database Statistics:")
-    for key, value in stats.items():
-        print(f"  {key}: {value}")
