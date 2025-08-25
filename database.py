@@ -4,12 +4,16 @@ import os
 DB_NAME = "store.db"
 
 def get_connection():
+    """Get database connection with proper configuration"""
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("PRAGMA journal_mode = WAL;")  # Better performance
+    conn.execute("PRAGMA synchronous = NORMAL;")  # Better performance
     return conn
 
 def _table_has_item_fk_cascade_on_sale_details(conn):
+    """Check if sale_details table has CASCADE foreign key for items"""
     cur = conn.cursor()
     cur.execute("PRAGMA foreign_key_list(sale_details)")
     fks = cur.fetchall()
@@ -19,10 +23,12 @@ def _table_has_item_fk_cascade_on_sale_details(conn):
     return False
 
 def setup_database():
+    """Setup database with all required tables and indexes"""
     must_seed = not os.path.exists(DB_NAME)
     conn = get_connection()
     cur = conn.cursor()
 
+    # Settings table
     cur.execute("""
     CREATE TABLE IF NOT EXISTS settings (
         id INTEGER PRIMARY KEY CHECK (id=1),
@@ -33,13 +39,16 @@ def setup_database():
     );
     """)
 
+    # Categories table
     cur.execute("""
     CREATE TABLE IF NOT EXISTS categories (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL UNIQUE
+        name TEXT NOT NULL UNIQUE,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
     """)
 
+    # Items/Products table
     cur.execute("""
     CREATE TABLE IF NOT EXISTS items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,18 +59,22 @@ def setup_database():
         stock_count REAL NOT NULL DEFAULT 0,
         photo_path TEXT,
         add_date TEXT,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
     );
     """)
 
+    # Sales table
     cur.execute("""
     CREATE TABLE IF NOT EXISTS sales (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         datetime TEXT NOT NULL,
-        total_price REAL NOT NULL DEFAULT 0
+        total_price REAL NOT NULL DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
     """)
 
+    # Sale details table
     cur.execute("""
     CREATE TABLE IF NOT EXISTS sale_details (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,17 +82,21 @@ def setup_database():
         item_id INTEGER NOT NULL,
         quantity REAL NOT NULL,
         price_each REAL NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
-        FOREIGN KEY (item_id) REFERENCES items(id) -- migrated to CASCADE below if needed
+        FOREIGN KEY (item_id) REFERENCES items(id) -- Will be migrated to CASCADE below if needed
     );
     """)
 
     conn.commit()
 
-    # migrate sale_details.item_id to ON DELETE CASCADE if needed
+    # Migrate sale_details.item_id to ON DELETE CASCADE if needed
     if not _table_has_item_fk_cascade_on_sale_details(conn):
+        print("Migrating sale_details table to add CASCADE foreign key...")
         cur.execute("PRAGMA foreign_keys = OFF;")
         conn.commit()
+        
+        # Create new table with CASCADE
         cur.execute("""
         CREATE TABLE IF NOT EXISTS _sale_details_new (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,27 +104,102 @@ def setup_database():
             item_id INTEGER NOT NULL,
             quantity REAL NOT NULL,
             price_each REAL NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
             FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
         );
         """)
+        
+        # Copy data
         cur.execute("""
-        INSERT INTO _sale_details_new (id, sale_id, item_id, quantity, price_each)
-        SELECT id, sale_id, item_id, quantity, price_each FROM sale_details;
+        INSERT INTO _sale_details_new (id, sale_id, item_id, quantity, price_each, created_at)
+        SELECT id, sale_id, item_id, quantity, price_each, 
+               COALESCE(created_at, datetime('now')) as created_at 
+        FROM sale_details;
         """)
+        
+        # Replace table
         cur.execute("DROP TABLE sale_details;")
         cur.execute("ALTER TABLE _sale_details_new RENAME TO sale_details;")
         conn.commit()
+        
         cur.execute("PRAGMA foreign_keys = ON;")
         conn.commit()
+        print("Migration completed successfully.")
 
+    # Create indexes for better performance
+    indexes = [
+        "CREATE INDEX IF NOT EXISTS idx_items_barcode ON items(barcode);",
+        "CREATE INDEX IF NOT EXISTS idx_items_category ON items(category_id);",
+        "CREATE INDEX IF NOT EXISTS idx_items_stock ON items(stock_count);",
+        "CREATE INDEX IF NOT EXISTS idx_sales_datetime ON sales(datetime);",
+        "CREATE INDEX IF NOT EXISTS idx_sale_details_sale_id ON sale_details(sale_id);",
+        "CREATE INDEX IF NOT EXISTS idx_sale_details_item_id ON sale_details(item_id);",
+    ]
+    
+    for index_sql in indexes:
+        cur.execute(index_sql)
+    
+    conn.commit()
+
+    # Seed initial data if this is a new database
     if must_seed:
+        print("Seeding initial data...")
+        # Add default category
         cur.execute("INSERT OR IGNORE INTO categories(name) VALUES (?)", ("غير مصنّف",))
-        # Settings will be filled on first run via UI, but ensure a row exists?
-        # We leave it empty so first-run dialog shows.
+        
+        # Add some sample categories
+        sample_categories = [
+            "مواد غذائية",
+            "مشروبات",
+            "منظفات",
+            "أدوات منزلية",
+            "قرطاسية"
+        ]
+        
+        for cat in sample_categories:
+            cur.execute("INSERT OR IGNORE INTO categories(name) VALUES (?)", (cat,))
+        
         conn.commit()
+        print("Initial data seeded successfully.")
 
     conn.close()
+    print("Database setup completed successfully.")
+
+def backup_database(backup_path=None):
+    """Create a backup of the database"""
+    if not backup_path:
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = f"store_backup_{timestamp}.db"
+    
+    import shutil
+    shutil.copy2(DB_NAME, backup_path)
+    return backup_path
+
+def get_database_stats():
+    """Get database statistics"""
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    stats = {}
+    
+    # Count records in each table
+    tables = ['categories', 'items', 'sales', 'sale_details']
+    for table in tables:
+        cur.execute(f"SELECT COUNT(*) FROM {table}")
+        stats[f"{table}_count"] = cur.fetchone()[0]
+    
+    # Database file size
+    stats['db_size_bytes'] = os.path.getsize(DB_NAME) if os.path.exists(DB_NAME) else 0
+    stats['db_size_mb'] = round(stats['db_size_bytes'] / (1024 * 1024), 2)
+    
+    conn.close()
+    return stats
 
 if __name__ == "__main__":
     setup_database()
+    stats = get_database_stats()
+    print("Database Statistics:")
+    for key, value in stats.items():
+        print(f"  {key}: {value}")
