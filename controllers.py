@@ -98,11 +98,16 @@ class Controller(MainUI):
         self._setup_responsive_tables()
 
     def _setup_autocomplete(self):
+        # Setup autocomplete with just product names, not barcodes
         all_items = models.get_items()
-        suggestions = [f"{item['name']} | {item['barcode']}" if item['barcode'] else item['name'] for item in all_items]
+        suggestions = [item['name'] for item in all_items if item['name']]
         completer = QCompleter(suggestions)
         completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchContains)  # Allow partial matching
         self.in_name.setCompleter(completer)
+        
+        # Connect completer selection to fill other fields
+        completer.activated.connect(self._on_autocomplete_selected)
 
     def _toggle_max_restore(self):
         if self.isMaximized():
@@ -373,12 +378,24 @@ class Controller(MainUI):
             return
         self._bill_find()
 
+    def _on_autocomplete_selected(self, text):
+        """Handle when user selects an item from autocomplete"""
+        # Find the item by name
+        items = models.search_items_by_name(text)
+        if items:
+            item = items[0]
+            # Fill barcode field (not name field)
+            self.in_barcode.setText(item["barcode"] or "")
+            # Set price if not in manual mode
+            if not self.chk_manual.isChecked():
+                self.in_price.setValue(float(item["price"]))
+
     def _on_name_text_changed(self, text):
-        # Auto-search when typing in name field - don't overwrite name field
-        if len(text) > 2:
+        # Auto-search when typing in name field - only fill other fields
+        if len(text) > 2 and not text.endswith(' | '):  # Avoid triggering on old autocomplete format
             items = models.search_items_by_name(text)
             if items:
-                # Only set barcode and price, don't overwrite the name field
+                # Only set barcode and price, never touch the name field
                 self.in_barcode.setText(items[0]["barcode"] or "")
                 if not self.chk_manual.isChecked():
                     self.in_price.setValue(float(items[0]["price"]))
@@ -400,7 +417,20 @@ class Controller(MainUI):
                 item = items[0]
         
         if item:
-            self._bill_fill_from_item(item)
+            # Only fill empty fields or barcode field, never overwrite typed name
+            current_name = self.in_name.text().strip()
+            
+            # Only set name if field is empty or contains a barcode
+            if not current_name or current_name == item.get("barcode", ""):
+                self.in_name.setText(item["name"])
+            
+            # Always update barcode field
+            self.in_barcode.setText(item["barcode"] or "")
+            
+            # Set price based on manual mode
+            if not self.chk_manual.isChecked():
+                self.in_price.setValue(float(item["price"]))
+                
             # Show stock information
             stock = max(0, item["stock_count"] or 0)  # Ensure stock is never negative
             if stock == int(stock):
@@ -424,18 +454,6 @@ class Controller(MainUI):
                     self.in_price.setValue(0)
                     self.in_price.setFocus()
 
-    def _bill_fill_from_item(self, item):
-        # Only set name if the field is empty or contains barcode
-        current_name = self.in_name.text().strip()
-        if not current_name or current_name == self.in_barcode.text().strip():
-            self.in_name.setText(item["name"])
-        
-        # Set price based on manual mode
-        if self.chk_manual.isChecked():
-            # Keep current price if manual mode is enabled
-            pass
-        else:
-            self.in_price.setValue(float(item["price"]))
 
     def _add_custom_item(self):
         """Add a custom item to the database from bill tab"""
