@@ -1,6 +1,7 @@
+# controllers.py (fixed custom price calculation)
 import os
 from datetime import datetime
-from PyQt5.QtWidgets import QFileDialog, QTableWidgetItem, QMessageBox, QInputDialog
+from PyQt5.QtWidgets import QFileDialog, QTableWidgetItem, QMessageBox, QInputDialog, QCompleter
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 from PyQt5.QtPrintSupport import QPrinter, QPrintDialog
@@ -9,7 +10,6 @@ from PyQt5.QtGui import QTextDocument
 from ui_main import MainUI
 import models
 
-# Optional camera/scan dependencies (kept as in original; camera not required)
 try:
     import cv2
 except Exception:
@@ -23,42 +23,57 @@ except Exception:
 ASSETS_PHOTOS_DIR = os.path.join("assets", "photos")
 os.makedirs(ASSETS_PHOTOS_DIR, exist_ok=True)
 
-# --- Barcode validation: only numeric and length in 8, 12, 13 ---
 ALLOWED_BARCODE_LENGTHS = {8, 12, 13}
+
 def is_valid_barcode(code: str) -> bool:
     return code.isdigit() and (len(code) in ALLOWED_BARCODE_LENGTHS)
+
+def fmt_qty(val):
+    return f"{val:.0f}" if val == int(val) else f"{val:.1f}"
+
+def fmt_money(val):
+    return f"{val:.0f}" if val == int(val) else f"{val:.2f}"
 
 class Controller(MainUI):
     def __init__(self):
         super().__init__()
 
-        # Window header buttons
+        self.currency = "د.ج"
+        self.current_bill_items = []  # List to track items in the current bill
+
+        # Setup window controls
         self.btn_min.clicked.connect(self.showMinimized)
         self.btn_max.clicked.connect(self._toggle_max_restore)
         self.btn_close.clicked.connect(self.close)
 
-        # Load settings; if missing, run first-time setup
-        self.currency = "د.ج"
+        # Load settings
         self._load_settings_or_first_run()
 
-        # Initialize data
+        # Initialize tabs
         self._load_categories()
         self._load_stock_table()
         self._load_sales_tab()
         self._apply_currency_to_inputs()
 
-        # Bill: connect signals
+        # Bill signals
         self.btn_bill_find.clicked.connect(self._bill_find)
         self.btn_bill_add.clicked.connect(self._bill_add)
         self.btn_bill_remove.clicked.connect(self._bill_remove_selected)
         self.btn_bill_save.clicked.connect(self._bill_save)
         self.btn_print_bill.clicked.connect(self._bill_print)
         self.btn_scanner_info.clicked.connect(self._show_scanner_info)
+        self.btn_add_custom.clicked.connect(self._add_custom_item)
 
-        # Hardware scanner support: scanners "type" then send Enter.
+        # Manual price checkbox signal
+        self.chk_manual.stateChanged.connect(self._toggle_manual_price)
+
+        # Autocomplete feature
+        self.in_name.textChanged.connect(self._on_name_text_changed)
+        self._setup_autocomplete()
+
         self.in_barcode.returnPressed.connect(self._handle_scanned_barcode)
 
-        # Stock
+        # Stock signals
         self.btn_stk_browse.clicked.connect(self._browse_photo)
         self.btn_stk_camera.clicked.connect(self._capture_photo)
         self.btn_stk_new_cat.clicked.connect(self._add_new_category)
@@ -68,21 +83,26 @@ class Controller(MainUI):
         self.btn_stk_refresh.clicked.connect(self._load_stock_table)
         self.tbl_stock.clicked.connect(self._stock_fill_form_from_selection)
 
-        # Sales
+        # Sales signals
         self.btn_sale_refresh.clicked.connect(self._load_sales_tab)
         self.btn_sale_view.clicked.connect(self._sales_view_selected)
         self.btn_sale_delete.clicked.connect(self._sales_delete_selected)
         self.tbl_sales.itemSelectionChanged.connect(self._sales_view_selected)
 
-        # Settings save
+        # Settings
         self.btn_settings_save.clicked.connect(self._save_settings_from_tab)
 
-        # Enable responsive table behavior
+        # Responsive tables
         self._setup_responsive_tables()
 
-    # ---------- Window Management ----------
+    def _setup_autocomplete(self):
+        all_items = models.get_items()
+        suggestions = [f"{item['name']} | {item['barcode']}" if item['barcode'] else item['name'] for item in all_items]
+        completer = QCompleter(suggestions)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self.in_name.setCompleter(completer)
+
     def _toggle_max_restore(self):
-        """Toggle between maximized and normal window state"""
         if self.isMaximized():
             self.showNormal()
             self.btn_max.setText("⬜")
@@ -91,60 +111,50 @@ class Controller(MainUI):
             self.btn_max.setText("❐")
 
     def resizeEvent(self, event):
-        """Enhanced resize event handling for better responsiveness"""
         super().resizeEvent(event)
         self._update_table_responsiveness()
 
     def _setup_responsive_tables(self):
-        """Setup responsive behavior for all tables"""
         tables = [self.tbl_bill, self.tbl_stock, self.tbl_sales, self.tbl_sale_details]
         for table in tables:
             if table:
                 table.horizontalHeader().setStretchLastSection(False)
-                # Enable word wrap for better text display
                 table.setWordWrap(True)
 
     def _update_table_responsiveness(self):
-        """Update table column sizes for responsiveness"""
         try:
-            # Update all tables to fit content properly
             tables = [
-                (self.tbl_bill, [2, 3, 4]),  # Resize specific columns, let name stretch (barcode hidden)
-                (self.tbl_stock, [2, 3, 4, 5, 6, 8]),  # Let name stretch
-                (self.tbl_sales, [0, 1, 2]),  # All columns resize to content
-                (self.tbl_sale_details, [2, 3, 4])  # Let name stretch (barcode hidden)
+                (self.tbl_bill, [2, 3, 4]),
+                (self.tbl_stock, [2, 3, 4, 5, 6, 8]),
+                (self.tbl_sales, [0, 1, 2]),
+                (self.tbl_sale_details, [2, 3, 4])
             ]
-            
-            for table, resize_cols in tables:
+            for table, cols in tables:
                 if table and table.rowCount() > 0:
-                    for col in resize_cols:
+                    for col in cols:
                         if col < table.columnCount():
                             table.resizeColumnToContents(col)
         except Exception:
             pass
 
-    # ---------- Settings (first-run & editing) ----------
+    # Settings
     def _load_settings_or_first_run(self):
-        """Load settings or show first-run setup dialog"""
         s = models.get_settings()
         if not s:
-            # First run: ask user for info (no logos shown here by design)
             QMessageBox.information(self, "الإعداد الأول", "مرحبًا! برجاء إدخال معلومات المتجر أولًا.")
             shop_name, ok1 = QInputDialog.getText(self, "اسم المتجر", "اسم المتجر:")
             if not ok1 or not shop_name.strip():
                 shop_name = "متجري"
-            contact, _ = QInputDialog.getText(self, "معلومات الاتصال", "هاتف / بريد إلكتروني (اختياري):")
+            contact, _ = QInputDialog.getText(self, "م정보 الاتصال", "هاتف / بريد إلكتروني (اختياري):")
             location, _ = QInputDialog.getText(self, "الموقع", "العنوان / الموقع (اختياري):")
             currency, ok4 = QInputDialog.getText(self, "العملة", "اكتب رمز العملة (مثال: د.ج ، ر.س ، MAD ، USD):")
             if not ok4 or not currency.strip():
                 currency = "د.ج"
             models.save_settings(shop_name.strip(), (contact or "").strip(), (location or "").strip(), currency.strip())
             s = models.get_settings()
-
         self._apply_settings_to_ui(s)
 
     def _apply_settings_to_ui(self, s):
-        """Apply settings to UI elements"""
         self.lbl_title.setText(s["shop_name"])
         self.setWindowTitle(s["shop_name"])
         self.sett_shop_name.setText(s["shop_name"])
@@ -154,7 +164,6 @@ class Controller(MainUI):
         self.currency = s["currency"]
 
     def _save_settings_from_tab(self):
-        """Save settings from the settings tab"""
         shop_name = self.sett_shop_name.text().strip() or "متجري"
         contact = self.sett_contact.text().strip()
         location = self.sett_location.text().strip()
@@ -166,25 +175,21 @@ class Controller(MainUI):
         self.msg("تم", "تم حفظ الإعدادات.")
 
     def _apply_currency_to_inputs(self):
-        """Apply currency symbol to input fields"""
         self.in_price.setPrefix(f"السعر ({self.currency}): ")
         self.stk_price.setPrefix(f"السعر ({self.currency}): ")
         self.stk_qty.setPrefix("المخزون: ")
         self.in_qty.setPrefix("الكمية: ")
-        # Refresh KPI and totals to show currency
         self._bill_recalc_total()
         self._load_sales_tab()
 
-    # ---------- Categories ----------
+    # Categories
     def _load_categories(self):
-        """Load categories into combo box"""
         cats = models.get_categories()
         self.stk_cat.clear()
         for c in cats:
             self.stk_cat.addItem(c["name"], c["id"])
 
     def _add_new_category(self):
-        """Add new category dialog"""
         name, ok = QInputDialog.getText(self, "تصنيف جديد", "اسم التصنيف:")
         if ok and name.strip():
             try:
@@ -194,24 +199,22 @@ class Controller(MainUI):
             except Exception as e:
                 QMessageBox.warning(self, "خطأ", f"تعذر إضافة التصنيف:\n{e}")
 
-    # ---------- Stock Management ----------
+    # Stock Methods
     def _browse_photo(self):
-        """Browse for product photo"""
         path, _ = QFileDialog.getOpenFileName(self, "اختر صورة", "", "Images (*.png *.jpg *.jpeg *.bmp)")
         if path:
             self.stk_photo.setText(path)
             self.set_preview_image(path)
 
     def _capture_photo(self):
-        """Capture photo using camera"""
         if cv2 is None:
-            QMessageBox.warning(self, "الكاميرا", "OpenCV غير مثبت. نفّذ:\npy -m pip install opencv-python")
+            QMessageBox.warning(self, "الكاميرا", "OpenCV غير مثبت.")
             return
         cap = cv2.VideoCapture(0)
         if not cap.isOpened():
             QMessageBox.warning(self, "الكاميرا", "تعذر فتح الكاميرا.")
             return
-        QMessageBox.information(self, "التقاط", "سيتم فتح نافذة الكاميرا.\nاضغط مفتاح C لالتقاط الصورة، Q للإلغاء.")
+        QMessageBox.information(self, "التقاط", "سيتم فتح نافذة الكاميرا.")
         path_saved = None
         while True:
             ret, frame = cap.read()
@@ -234,20 +237,24 @@ class Controller(MainUI):
             self.msg("تم", f"تم حفظ الصورة: {path_saved}")
 
     def _stock_add(self):
-        """Add new stock item"""
         try:
             name = self.stk_name.text().strip()
             if not name:
                 self.msg("تنبيه", "الرجاء إدخال الاسم.")
                 return
             barcode = self.stk_barcode.text().strip()
-            if barcode:
-                if not is_valid_barcode(barcode):
-                    self.msg("خطأ", "الباركود يجب أن يكون أرقامًا صحيحة (EAN-13: 13 رقم، UPC-A: 12 رقم، EAN-8: 8 أرقام)")
-                    return
+            if barcode and not is_valid_barcode(barcode):
+                self.msg("خطأ", "الباركود غير صالح")
+                return
             cat_id = self.stk_cat.currentData()
             price = float(self.stk_price.value())
             qty = float(self.stk_qty.value())
+            
+            # Prevent negative stock
+            if qty < 0:
+                self.msg("خطأ", "لا يمكن إضافة كمية مخزون سالبة.")
+                return
+                
             photo = self.stk_photo.text().strip() or None
             models.add_item(name, cat_id, barcode or None, price, qty, photo)
             self._load_stock_table()
@@ -257,7 +264,6 @@ class Controller(MainUI):
             QMessageBox.warning(self, "خطأ", f"تعذر إضافة الصنف:\n{e}")
 
     def _stock_update(self):
-        """Update selected stock item"""
         row = self._selected_row(self.tbl_stock)
         if row is None:
             self.msg("تنبيه", "اختر صفًا للتعديل.")
@@ -269,13 +275,18 @@ class Controller(MainUI):
                 self.msg("تنبيه", "الرجاء إدخال الاسم.")
                 return
             barcode = self.stk_barcode.text().strip()
-            if barcode:
-                if not is_valid_barcode(barcode):
-                    self.msg("خطأ", "الباركود يجب أن يكون أرقامًا صحيحة (EAN-13: 13 رقم، UPC-A: 12 رقم، EAN-8: 8 أرقام)")
-                    return
+            if barcode and not is_valid_barcode(barcode):
+                self.msg("خطأ", "الباركود غير صالح")
+                return
             cat_id = self.stk_cat.currentData()
             price = float(self.stk_price.value())
             qty = float(self.stk_qty.value())
+            
+            # Prevent negative stock
+            if qty < 0:
+                self.msg("خطأ", "لا يمكن إضافة كمية مخزون سالبة.")
+                return
+                
             photo = self.stk_photo.text().strip() or None
             models.update_item(item_id, name, cat_id, barcode or None, price, qty, photo)
             self._load_stock_table()
@@ -284,7 +295,6 @@ class Controller(MainUI):
             QMessageBox.warning(self, "خطأ", f"تعذر تعديل الصنف:\n{e}")
 
     def _stock_delete(self):
-        """Delete selected stock item"""
         row = self._selected_row(self.tbl_stock)
         if row is None:
             self.msg("تنبيه", "اختر صفًا للحذف.")
@@ -293,14 +303,13 @@ class Controller(MainUI):
         confirm = QMessageBox.question(self, "تأكيد", "سيتم حذف الصنف وجميع تفاصيل البيع المرتبطة به.\nهل أنت متأكد؟")
         if confirm == QMessageBox.Yes:
             try:
-                models.delete_item(item_id)  # CASCADE removes sale_details
+                models.delete_item(item_id)
                 self._load_stock_table()
-                self.msg("تم", "تم حذف الصنف وكافة التفاصيل المرتبطة.")
+                self.msg("تم", "تم حذف الصنف.")
             except Exception as e:
                 QMessageBox.warning(self, "خطأ", f"تعذر حذف الصنف:\n{e}")
 
     def _clear_stock_form(self):
-        """Clear stock form fields"""
         self.stk_name.clear()
         self.stk_barcode.clear()
         self.stk_price.setValue(0)
@@ -309,7 +318,6 @@ class Controller(MainUI):
         self.set_preview_image("")
 
     def _stock_fill_form_from_selection(self):
-        """Fill stock form from selected table row"""
         row = self._selected_row(self.tbl_stock)
         if row is None:
             return
@@ -318,569 +326,462 @@ class Controller(MainUI):
         idx = self.stk_cat.findText(cat_name)
         if idx >= 0:
             self.stk_cat.setCurrentIndex(idx)
-        barcode_item = self.tbl_stock.item(row, 3)
-        self.stk_barcode.setText(barcode_item.text() if barcode_item else "")
+        self.stk_barcode.setText(self.tbl_stock.item(row, 3).text())
         self.stk_price.setValue(float(self.tbl_stock.item(row, 4).text()))
         self.stk_qty.setValue(float(self.tbl_stock.item(row, 5).text()))
-        photo_item = self.tbl_stock.item(row, 7)
-        photo_path = photo_item.text() if photo_item else ""
-        self.stk_photo.setText(photo_path)
-        self.set_preview_image(photo_path)
+        self.stk_photo.setText(self.tbl_stock.item(row, 7).text())
+        self.set_preview_image(self.tbl_stock.item(row, 7).text())
 
     def _load_stock_table(self):
-        """Load stock data into table with enhanced formatting"""
         items = models.get_items()
         self.tbl_stock.setRowCount(0)
-        
         for r in items:
             row = self.tbl_stock.rowCount()
             self.tbl_stock.insertRow(row)
-            
-            # ID (hidden)
             self.tbl_stock.setItem(row, 0, QTableWidgetItem(str(r["id"])))
-            
-            # Name with larger, bold font
             name_item = QTableWidgetItem(r["name"])
-            name_font = QFont(self.arabic_font.family(), 13, QFont.Bold)
-            name_item.setFont(name_font)
+            name_item.setFont(QFont(self.arabic_font.family(), 13, QFont.Bold))
             self.tbl_stock.setItem(row, 1, name_item)
-
-            # Category
             self.tbl_stock.setItem(row, 2, QTableWidgetItem(r["category_name"] or "غير مصنّف"))
-            
-            # Barcode
             self.tbl_stock.setItem(row, 3, QTableWidgetItem(r["barcode"] or ""))
+            self.tbl_stock.setItem(row, 4, QTableWidgetItem(fmt_money(r['price'])))
             
-            # Price
-            price_text = f"{r['price']:.0f}" if r['price'] == int(r['price']) else f"{r['price']:.2f}"
-            self.tbl_stock.setItem(row, 4, QTableWidgetItem(price_text))
-            
-            # Stock count
-            stock_text = f"{r['stock_count']:.0f}" if r['stock_count'] == int(r['stock_count']) else f"{r['stock_count']:.1f}"
-            stock_item = QTableWidgetItem(stock_text)
-            if (r["stock_count"] or 0) <= 0:
+            # Ensure stock is never negative
+            stock_count = max(0, r['stock_count'] or 0)
+            stock_item = QTableWidgetItem(fmt_qty(stock_count))
+            if stock_count <= 0:
                 stock_item.setForeground(Qt.red)
             self.tbl_stock.setItem(row, 5, stock_item)
-
-            # Status
-            status_text = "نفد المخزون" if (r["stock_count"] or 0) <= 0 else "متاح"
+            
+            status_text = "نفد المخزون" if stock_count <= 0 else "متاح"
             status_item = QTableWidgetItem(status_text)
-            if (r["stock_count"] or 0) <= 0:
+            if stock_count <= 0:
                 status_item.setForeground(Qt.red)
-                status_item.setObjectName("OutOfStock")
             self.tbl_stock.setItem(row, 6, status_item)
-
-            # Photo path (hidden)
             self.tbl_stock.setItem(row, 7, QTableWidgetItem(r["photo_path"] or ""))
-            
-            # Add date
             self.tbl_stock.setItem(row, 8, QTableWidgetItem(r["add_date"] or ""))
-            
-            # Category ID (hidden)
             self.tbl_stock.setItem(row, 9, QTableWidgetItem(str(r["category_id"] or "")))
-
-            # Set row height for better readability
             self.tbl_stock.setRowHeight(row, 40)
-
-        # Update responsiveness
         self._update_table_responsiveness()
 
-    # ---------- Bill Management ----------
+    # Bill Methods
     def _handle_scanned_barcode(self):
-        """
-        Enhanced barcode scanning with automatic addition to bill.
-        Handles hardware barcode scanners (keyboard wedge).
-        """
         barcode = self.in_barcode.text().strip()
         if not barcode:
             return
-            
-        if not is_valid_barcode(barcode):
-            self.msg("خطأ", "الباركود يجب أن يكون أرقامًا صحيحة (EAN-13: 13 رقم، UPC-A: 12 رقم، EAN-8: 8 أرقام)")
-            self.in_barcode.selectAll()
-            self.in_barcode.setFocus()
-            return
-            
-        item = models.get_item_by_barcode(barcode)
-        if item:
-            # Auto-fill fields
-            self.in_name.setText(item["name"])
-            if self.chk_manual.currentIndex() == 0:  # Use DB price
-                self.in_price.setValue(float(item["price"]))
-            
-            # Auto-add to bill with current quantity
-            self._bill_add(auto_from_scan=True)
-            
-            # Show success message briefly
-            self.msg("تم", f"تم إضافة {item['name']} إلى الفاتورة")
-        else:
-            self.msg("ملاحظة", "لم يتم العثور على منتج بهذا الباركود. يمكنك إدخاله يدويًا وإضافته للمخزون لاحقًا.")
-            self.in_barcode.selectAll()
-            self.in_barcode.setFocus()
+        self._bill_find()
 
-    def _show_scanner_info(self):
-        """Show information about barcode scanner setup"""
-        info_text = """
-معلومات ماسح الباركود:
+    def _on_name_text_changed(self, text):
+        # Auto-search when typing in name field
+        if len(text) > 2:
+            items = models.search_items_by_name(text)
+            if items:
+                self.in_barcode.setText(items[0]["barcode"] or "")
+                self._bill_fill_from_item(items[0])
 
-• يدعم النظام مواسح الباركود USB (نوع لوحة المفاتيح)
-• الأنواع المدعومة:
-  - EAN-13 (13 رقم)
-  - UPC-A (12 رقم) 
-  - EAN-8 (8 أرقام)
+    def _toggle_manual_price(self, state):
+        """Enable/disable price field based on manual price checkbox"""
+        self.in_price.setEnabled(state == Qt.Checked)
 
-• طريقة الاستخدام:
-  1. وجه الماسح نحو الباركود
-  2. اضغط الزناد أو الزر
-  3. سيظهر الرقم في حقل الباركود تلقائيًا
-  4. اضغط Enter أو انقر "بحث" للعثور على المنتج
-
-• للإضافة السريعة:
-  - بعد المسح، سيتم البحث تلقائيًا
-  - إذا وُجد المنتج، سيُضاف للفاتورة مباشرة
-
-ملاحظة: تأكد من أن الماسح مضبوط على وضع "لوحة المفاتيح"
-        """
-        QMessageBox.information(self, "معلومات ماسح الباركود", info_text)
     def _bill_find(self):
-        """Find item by barcode and populate fields"""
         barcode = self.in_barcode.text().strip()
-        if not barcode:
-            self.msg("تنبيه", "أدخل الباركود أولًا.")
-            return
-            
-        if not is_valid_barcode(barcode):
-            self.msg("خطأ", "الباركود يجب أن يكون أرقامًا صحيحة (EAN-13: 13 رقم، UPC-A: 12 رقم، EAN-8: 8 أرقام)")
-            return
-            
-        item = models.get_item_by_barcode(barcode)
-        if item:
-            self.in_name.setText(item["name"])
-            if self.chk_manual.currentIndex() == 0:
-                self.in_price.setValue(float(item["price"]))
-            if (item["stock_count"] or 0) <= 0:
-                QMessageBox.warning(self, "نفد المخزون", "هذا المنتج نفد من المخزون. يمكنك تحديث كميته من تبويب المخزون.")
-        else:
-            self.msg("ملاحظة", "لم يتم العثور على منتج بهذا الباركود. يمكنك إدخاله يدويًا وإضافته للمخزون لاحقًا.")
-
-    def _bill_add(self, auto_from_scan=False):
-        """Add item to current bill with real-time stock deduction"""
-        barcode = self.in_barcode.text().strip()
-        if barcode and not is_valid_barcode(barcode):
-            self.msg("خطأ", "الباركود يجب أن يكون أرقامًا صحيحة (EAN-13: 13 رقم، UPC-A: 12 رقم، EAN-8: 8 أرقام)")
-            return
-            
         name = self.in_name.text().strip()
-        if not name:
-            self.msg("تنبيه", "أدخل الاسم.")
-            return
-            
-        price_each = float(self.in_price.value())
-        qty = float(self.in_qty.value())
-        if qty <= 0:
-            self.msg("تنبيه", "الكمية يجب أن تكون أكبر من صفر.")
-            return
-
-        # Get item from database
-        item = models.get_item_by_barcode(barcode) if barcode else None
-        item_id = item["id"] if item else None
         
-        # Check stock availability
-        if item and (item["stock_count"] or 0) < qty:
-            reply = QMessageBox.question(
-                self, "تنبيه المخزون", 
-                f"الكمية المطلوبة ({qty:.0f if qty == int(qty) else qty}) أكبر من المتاح ({item['stock_count']:.0f if item['stock_count'] == int(item['stock_count']) else item['stock_count']}).\n"
-                "هل تريد المتابعة؟ سيصبح المخزون سالبًا.",
-                QMessageBox.Yes | QMessageBox.No
-            )
-            if reply == QMessageBox.No:
-                return
+        item = None
+        if barcode:
+            item = models.get_item_by_barcode(barcode)
+        elif name:
+            items = models.search_items_by_name(name)
+            if items:
+                item = items[0]
+        
+        if item:
+            self._bill_fill_from_item(item)
+            # Show stock information
+            stock = max(0, item["stock_count"] or 0)  # Ensure stock is never negative
+            if stock == int(stock):
+                stock_text = f"{stock:.0f}"
+            else:
+                stock_text = f"{stock:.1f}"
+            self.msg("معلومات المخزون", f"المتاح في المخزون: {stock_text}")
+        else:
+            # Item not found, allow adding as custom item
+            if barcode or name:
+                reply = QMessageBox.question(
+                    self, 
+                    "منتج غير موجود", 
+                    "المنتج غير موجود في قاعدة البيانات. هل تريد إضافه إلى الفاتورة كمنتج مخصص؟",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply == QMessageBox.Yes:
+                    # Enable manual price for custom item
+                    self.chk_manual.setChecked(True)
+                    self.in_price.setEnabled(True)
+                    self.in_price.setValue(0)
+                    self.in_price.setFocus()
 
-        subtotal = price_each * qty
+    def _bill_fill_from_item(self, item):
+        self.in_name.setText(item["name"])
+        
+        # Set price based on manual mode
+        if self.chk_manual.isChecked():
+            # Keep current price if manual mode is enabled
+            pass
+        else:
+            self.in_price.setValue(float(item["price"]))
+
+    def _add_custom_item(self):
+        """Add a custom item to the database from bill tab"""
+        name = self.in_name.text().strip()
+        barcode = self.in_barcode.text().strip()
+        price = float(self.in_price.value())
+        
+        if not name:
+            self.msg("خطأ", "الرجاء إدخال اسم المنتج.")
+            return
+        
+        if not barcode:
+            # Generate a temporary barcode for custom items
+            from datetime import datetime
+            barcode = f"TEMP_{datetime.now().strftime('%H%M%S')}"
+        
+        # Ask if user wants to save to database
+        reply = QMessageBox.question(
+            self,
+            "حفظ المنتج",
+            "هل تريد حفظ هذا المنتج في قاعدة البيانات؟",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            # Save to database
+            try:
+                # Get default category (uncategorized)
+                default_cat = models.get_category_by_name("غير مصنّف")
+                cat_id = default_cat["id"] if default_cat else None
+                
+                # Add to database
+                models.add_item(name, cat_id, barcode or None, price, 0, None)
+                self.msg("تم", "تم حفظ المنتج في قاعدة البيانات.")
+                self._load_stock_table()
+            except Exception as e:
+                QMessageBox.warning(self, "خطأ", f"تعذر حفظ المنتج:\n{e}")
+                return
+        
+        # Add to bill even if not saved to database
+        self._bill_add_custom_item(name, barcode, price)
+
+    def _bill_add_custom_item(self, name, barcode, price):
+        """Add custom item to bill (not in database)"""
+        qty = float(self.in_qty.value())
+        
+        if not name or qty <= 0:
+            self.msg("خطأ", "الرجاء إدخال اسم المنتج وكمية صحيحة.")
+            return
         
         # Add to bill table
         row = self.tbl_bill.rowCount()
         self.tbl_bill.insertRow(row)
-
-        self.tbl_bill.setItem(row, 0, QTableWidgetItem(barcode or ""))
         
-        # Name with larger font
+        # Calculate total
+        total = price * qty
+        
+        # Add items to table
+        self.tbl_bill.setItem(row, 0, QTableWidgetItem(barcode or ""))
         name_item = QTableWidgetItem(name)
         name_item.setFont(self._bill_name_font)
         self.tbl_bill.setItem(row, 1, name_item)
-
-        price_text = f"{price_each:.0f}" if price_each == int(price_each) else f"{price_each:.2f}"
-        qty_text = f"{qty:.0f}" if qty == int(qty) else f"{qty:.1f}"
-        subtotal_text = f"{subtotal:.0f}" if subtotal == int(subtotal) else f"{subtotal:.2f}"
+        self.tbl_bill.setItem(row, 2, QTableWidgetItem(fmt_money(price)))
+        self.tbl_bill.setItem(row, 3, QTableWidgetItem(fmt_qty(qty)))
+        self.tbl_bill.setItem(row, 4, QTableWidgetItem(fmt_money(total)))
+        self.tbl_bill.setItem(row, 5, QTableWidgetItem("CUSTOM"))  # Mark as custom item
         
-        self.tbl_bill.setItem(row, 2, QTableWidgetItem(f"{price_text} {self.currency}"))
-        self.tbl_bill.setItem(row, 3, QTableWidgetItem(qty_text))
-        self.tbl_bill.setItem(row, 4, QTableWidgetItem(f"{subtotal_text} {self.currency}"))
-        self.tbl_bill.setItem(row, 5, QTableWidgetItem(str(item_id) if item_id else ""))
-
-        # Set row height for better readability
-        self.tbl_bill.setRowHeight(row, 45)
-
-        # Real-time stock deduction
-        if item_id:
-            try:
-                models.adjust_stock(item_id, -qty)
-                self._load_stock_table()  # Refresh stock display
-            except Exception as e:
-                QMessageBox.warning(self, "خطأ في المخزون", f"تعذر تحديث المخزون:\n{e}")
-
+        # Add to internal tracking
+        self.current_bill_items.append({
+            "id": -1,  # Custom items have negative ID
+            "name": name,
+            "barcode": barcode,
+            "price": price,
+            "qty": qty,
+            "total": total,
+            "is_custom": True
+        })
+        
+        # Recalculate total
         self._bill_recalc_total()
-
-        # Reset inputs for next item
-        if not auto_from_scan:
-            self.in_name.clear()
-            if self.chk_manual.currentIndex() == 0:
-                self.in_price.setValue(0)
-            self.in_qty.setValue(1.0)
-
+        
+        # Clear input fields for next item
         self.in_barcode.clear()
+        self.in_name.clear()
+        self.in_qty.setValue(1.0)
+        self.in_price.setValue(0.0)
+        self.chk_manual.setChecked(False)
+        
+        # Set focus back to barcode field
+        self.in_barcode.setFocus()
+
+    def _bill_add(self):
+        # Get item details
+        barcode = self.in_barcode.text().strip()
+        name = self.in_name.text().strip()
+        price = float(self.in_price.value())
+        qty = float(self.in_qty.value())
+        
+        if not name or qty <= 0:
+            self.msg("خطأ", "الرجاء إدخال اسم المنتج وكمية صحيحة.")
+            return
+        
+        # Check if item exists in database
+        item = None
+        if barcode:
+            item = models.get_item_by_barcode(barcode)
+        if not item and name:
+            items = models.search_items_by_name(name)
+            if items:
+                item = items[0]
+        
+        if not item:
+            # Item not in database, add as custom item
+            self._bill_add_custom_item(name, barcode, price)
+            return
+        
+        # Check stock availability
+        available_stock = max(0, item["stock_count"] or 0)  # Ensure stock is never negative
+        if qty > available_stock:
+            self.msg("خطأ", f"الكمية المطلوبة ({qty}) أكبر من المخزون المتاح ({available_stock}).")
+            return
+        
+        # Add to bill table
+        row = self.tbl_bill.rowCount()
+        self.tbl_bill.insertRow(row)
+        
+        # Calculate total
+        total = price * qty
+        
+        # Add items to table
+        self.tbl_bill.setItem(row, 0, QTableWidgetItem(barcode or ""))
+        name_item = QTableWidgetItem(name)
+        name_item.setFont(self._bill_name_font)
+        self.tbl_bill.setItem(row, 1, name_item)
+        self.tbl_bill.setItem(row, 2, QTableWidgetItem(fmt_money(price)))
+        self.tbl_bill.setItem(row, 3, QTableWidgetItem(fmt_qty(qty)))
+        self.tbl_bill.setItem(row, 4, QTableWidgetItem(fmt_money(total)))
+        self.tbl_bill.setItem(row, 5, QTableWidgetItem(str(item["id"])))
+        
+        # Add to internal tracking
+        self.current_bill_items.append({
+            "id": item["id"],
+            "name": name,
+            "barcode": barcode,
+            "price": price,
+            "qty": qty,
+            "total": total,
+            "is_custom": False
+        })
+        
+        # Recalculate total
+        self._bill_recalc_total()
+        
+        # Clear input fields for next item
+        self.in_barcode.clear()
+        self.in_name.clear()
+        self.in_qty.setValue(1.0)
+        self.in_price.setValue(0.0)
+        self.chk_manual.setChecked(False)
+        
+        # Set focus back to barcode field
         self.in_barcode.setFocus()
 
     def _bill_remove_selected(self):
-        """Remove selected item from bill and restore stock"""
         row = self._selected_row(self.tbl_bill)
         if row is None:
-            self.msg("تنبيه", "اختر سطرًا للحذف.")
+            self.msg("تنبيه", "اختر صفًا للحذف.")
             return
-
-        # Get item details before removal
-        item_id_item = self.tbl_bill.item(row, 5)
-        qty_item = self.tbl_bill.item(row, 3)
         
-        item_id_text = item_id_item.text().strip() if item_id_item else ""
-        qty_text = qty_item.text().strip() if qty_item else "0"
+        # Get the item to be removed
+        item_to_remove = self.current_bill_items[row]
         
-        # Restore stock if item exists in database
-        try:
-            if item_id_text:
-                item_id = int(item_id_text)
-                qty = float(qty_text)
-                models.adjust_stock(item_id, +qty)  # Restore stock
-                self._load_stock_table()  # Refresh stock display
-        except Exception as e:
-            QMessageBox.warning(self, "خطأ في المخزون", f"تعذر استرداد المخزون:\n{e}")
-        finally:
-            self.tbl_bill.removeRow(row)
-            self._bill_recalc_total()
+        # Remove from table and internal tracking
+        self.tbl_bill.removeRow(row)
+        self.current_bill_items.pop(row)
+        
+        # Recalculate total
+        self._bill_recalc_total()
+        
+        # Show confirmation message
+        self.msg("تم", f"تم حذف {item_to_remove['name']} من الفاتورة.")
 
     def _bill_recalc_total(self):
-        """Recalculate and display bill total"""
-        total = 0.0
-        for r in range(self.tbl_bill.rowCount()):
-            total_item = self.tbl_bill.item(r, 4)
-            if total_item:
-                try:
-                    # Extract numeric value from "amount currency" format
-                    total += float(total_item.text().split()[0])
-                except (ValueError, IndexError):
-                    pass
-                    
-        total_text = f"{total:.0f}" if total == int(total) else f"{total:.2f}"
-        self.lbl_total.setText(f"الإجمالي: {total_text} {self.currency}")
-        self._update_table_responsiveness()
+        total = sum(item["total"] for item in self.current_bill_items)
+        self.lbl_total.setText(f"الإجمالي: {fmt_money(total)} {self.currency}")
 
     def _bill_save(self):
-        """Save current bill as a sale"""
-        if self.tbl_bill.rowCount() == 0:
-            self.msg("تنبيه", "الفاتورة فارغة.")
+        if not self.current_bill_items:
+            self.msg("تنبيه", "لا توجد عناصر في الفاتورة.")
             return
-
-        total = 0.0
-        bill_lines = []
         
-        for r in range(self.tbl_bill.rowCount()):
-            barcode_item = self.tbl_bill.item(r, 0)
-            name_item = self.tbl_bill.item(r, 1)
-            price_item = self.tbl_bill.item(r, 2)
-            qty_item = self.tbl_bill.item(r, 3)
-            subtotal_item = self.tbl_bill.item(r, 4)
-            item_id_item = self.tbl_bill.item(r, 5)
-            
-            barcode = barcode_item.text() if barcode_item else ""
-            name = name_item.text() if name_item else ""
-            price_each = float(price_item.text().split()[0]) if price_item else 0.0
-            qty = float(qty_item.text()) if qty_item else 0.0
-            subtotal = float(subtotal_item.text().split()[0]) if subtotal_item else 0.0
-            item_id_text = item_id_item.text().strip() if item_id_item else ""
-            item_id = int(item_id_text) if item_id_text else None
-            
-            total += subtotal
-            bill_lines.append((item_id, barcode, name, qty, price_each))
-
+        # Calculate total (include custom items)
+        total = sum(item["total"] for item in self.current_bill_items)
+        
         # Create sale record
-        sale_id = models.add_sale(total_price=total)
-
-        # Add sale details (stock already adjusted in real-time)
-        for (item_id, barcode, name, qty, price_each) in bill_lines:
-            if item_id is None:
-                # Create new item with zero stock for unknown products
-                cat = models.get_category_by_name("غير مصنّف")
-                cat_id = cat["id"] if cat else None
-                models.add_item(name=name, category_id=cat_id, barcode=barcode or None,
-                              price=price_each, stock_count=0, photo_path=None)
-                item_row = models.get_item_by_barcode(barcode) if barcode else None
-                item_id = item_row["id"] if item_row else None
-
-            if item_id:
-                models.add_sale_detail(sale_id, item_id, qty, price_each)
-
-        # Clear bill and refresh displays
+        sale_id = models.add_sale(total)
+        
+        # Add sale details and update stock (only for database items)
+        for item in self.current_bill_items:
+            if not item.get("is_custom", False):  # Only database items
+                models.add_sale_detail(sale_id, item["id"], item["qty"], item["price"])
+                models.adjust_stock(item["id"], -item["qty"])  # Subtract from stock
+        
+        self.msg("تم", f"تم حفظ الفاتورة رقم {sale_id}.")
+        
+        # Clear bill
         self.tbl_bill.setRowCount(0)
+        self.current_bill_items = []
         self._bill_recalc_total()
+        
+        # Refresh stock and sales tables
         self._load_stock_table()
         self._load_sales_tab()
-        
-        self.msg("تم", f"تم حفظ الفاتورة بنجاح.\nرقم العملية: {sale_id}")
 
     def _bill_print(self):
-        """Print current bill with enhanced formatting"""
-        if self.tbl_bill.rowCount() == 0:
-            self.msg("تنبيه", "لا توجد عناصر لطباعة الفاتورة الحالية.")
+        if not self.current_bill_items:
+            self.msg("تنبيه", "لا توجد عناصر في الفاتورة للطباعة.")
             return
-
-        # Get shop settings
-        s = models.get_settings()
-        shop = s["shop_name"]
-        contact = s["contact"] or ""
-        location = s["location"] or ""
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        # Build table rows
-        rows_html = ""
-        total = 0.0
         
-        for r in range(self.tbl_bill.rowCount()):
-            name_item = self.tbl_bill.item(r, 1)
-            price_item = self.tbl_bill.item(r, 2)
-            qty_item = self.tbl_bill.item(r, 3)
-            subtotal_item = self.tbl_bill.item(r, 4)
-            
-            name = name_item.text() if name_item else ""
-            price_each = float(price_item.text().split()[0]) if price_item else 0.0
-            qty = float(qty_item.text()) if qty_item else 0.0
-            subtotal = float(subtotal_item.text().split()[0]) if subtotal_item else 0.0
-            
-            total += subtotal
-            
-            # Format numbers without unnecessary decimals
-            price_text = f"{price_each:.0f}" if price_each == int(price_each) else f"{price_each:.2f}"
-            qty_text = f"{qty:.0f}" if qty == int(qty) else f"{qty:.1f}"
-            subtotal_text = f"{subtotal:.0f}" if subtotal == int(subtotal) else f"{subtotal:.2f}"
-            
-            rows_html += f"""
-            <tr>
-                <td style="font-size:14pt;font-weight:600;">{name}</td>
-                <td>{qty_text}</td>
-                <td>{price_text} {self.currency}</td>
-                <td>{subtotal_text} {self.currency}</td>
-            </tr>
-            """
-
-        # Format total without unnecessary decimals
-        total_text = f"{total:.0f}" if total == int(total) else f"{total:.2f}"
-
-        # Create HTML invoice
+        # Create HTML receipt
         html = f"""
-        <html dir="rtl">
-        <head>
-            <meta charset="utf-8">
-            <style>
-                body {{ 
-                    font-family: 'Segoe UI', Arial; 
-                    margin: 20px;
-                    background: white;
-                    color: black;
-                }}
-                h1 {{ 
-                    margin: 0; 
-                    text-align: center;
-                    color: #2563eb;
-                    border-bottom: 2px solid #2563eb;
-                    padding-bottom: 10px;
-                }}
-                .header-info {{
-                    text-align: center;
-                    margin: 10px 0;
-                    color: #64748b;
-                }}
-                table {{ 
-                    width: 100%; 
-                    border-collapse: collapse; 
-                    margin-top: 20px;
-                }}
-                th, td {{ 
-                    border: 1px solid #cbd5e1; 
-                    padding: 8px; 
-                    text-align: right; 
-                }}
-                th {{ 
-                    background: #f1f5f9; 
-                    font-weight: bold;
-                    color: #1e293b;
-                }}
-                .total-row {{
-                    background: #dbeafe;
-                    font-weight: bold;
-                    font-size: 14pt;
-                }}
-                .footer {{
-                    margin-top: 30px;
-                    text-align: center;
-                    color: #64748b;
-                    font-size: 10pt;
-                }}
-            </style>
-        </head>
-        <body>
-            <h1>{shop}</h1>
-            <div class="header-info">{location}</div>
-            <div class="header-info">{contact}</div>
+        <html>
+        <body style='font-family: Arial; text-align: right; direction: rtl;'>
+            <h2>{self.lbl_title.text()}</h2>
+            <p>{self.sett_contact.text()}</p>
+            <p>{self.sett_location.text()}</p>
             <hr>
-            <div style="text-align: center; margin: 15px 0;">
-                <strong>التاريخ والوقت: {now}</strong>
-            </div>
-            <table>
-                <thead>
-                    <tr>
-                        <th>الاسم</th>
-                        <th>الكمية</th>
-                        <th>سعر الوحدة</th>
-                        <th>الإجمالي</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {rows_html}
-                </tbody>
-                <tfoot>
-                    <tr class="total-row">
-                        <th colspan="3" style="text-align:left;">الإجمالي النهائي</th>
-                        <th>{total_text} {self.currency}</th>
-                    </tr>
-                </tfoot>
+            <h3>فاتورة بيع</h3>
+            <p>التاريخ: {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
+            <table width='100%' border='1' cellpadding='5'>
+                <tr>
+                    <th>الاسم</th>
+                    <th>السعر</th>
+                    <th>الكمية</th>
+                    <th>الإجمالي</th>
+                </tr>
+        """
+        
+        for item in self.current_bill_items:
+            html += f"""
+                <tr>
+                    <td>{item['name']}</td>
+                    <td>{fmt_money(item['price'])} {self.currency}</td>
+                    <td>{fmt_qty(item['qty'])}</td>
+                    <td>{fmt_money(item['total'])} {self.currency}</td>
+                </tr>
+            """
+        
+        total = sum(item["total"] for item in self.current_bill_items)
+        html += f"""
+                <tr>
+                    <td colspan='3' style='text-align: left;'><b>الإجمالي</b></td>
+                    <td><b>{fmt_money(total)} {self.currency}</b></td>
+                </tr>
             </table>
-            <div class="footer">
-                شكرًا لتعاملكم معنا
-            </div>
+            <hr>
+            <p>شكرًا لزيارتكم</p>
         </body>
         </html>
         """
         
-        # Print document
-        doc = QTextDocument()
-        doc.setHtml(html)
-        printer = QPrinter(QPrinter.HighResolution)
+        # Print dialog
+        printer = QPrinter()
         dialog = QPrintDialog(printer, self)
-        dialog.setWindowTitle("طباعة الفاتورة")
         if dialog.exec_() == QPrintDialog.Accepted:
+            doc = QTextDocument()
+            doc.setHtml(html)
             doc.print_(printer)
 
-    # ---------- Sales Management ----------
+    def _show_scanner_info(self):
+        """Show information about barcode scanner"""
+        info = """
+        معلومات الماسح الضوئي:
+        
+        - يمكنك استخدام ماسح باركود خارجي (USB)
+        - أو استخدام كاميرا الجهاز للمسح الضوئي
+        - أو إدخال الباركود يدويًا
+        
+        صيغ الباركود المدعومة:
+        - EAN-13 (13 رقم)
+        - UPC-A (12 رقم) 
+        - EAN-8 (8 رقم)
+        """
+        QMessageBox.information(self, "معلومات الماسح", info)
+
+    # Sales Methods
     def _load_sales_tab(self):
-        """Load sales data and KPIs"""
-        # Load KPIs
+        # Load sales summary
         total_sales = models.get_sales_total()
         today_sales = models.get_sales_summary_today()
-        latest = models.get_latest_sale()
+        latest_sale = models.get_latest_sale()
         
-        total_text = f"{total_sales:.0f}" if total_sales == int(total_sales) else f"{total_sales:.2f}"
-        today_text = f"{today_sales:.0f}" if today_sales == int(today_sales) else f"{today_sales:.2f}"
+        self.lbl_total_sales.setText(f"إجمالي المبيعات: {fmt_money(total_sales)} {self.currency}")
+        self.lbl_today_sales.setText(f"مبيعات اليوم: {fmt_money(today_sales)} {self.currency}")
         
-        self.lbl_total_sales.setText(f"إجمالي المبيعات: {total_text} {self.currency}")
-        self.lbl_today_sales.setText(f"مبيعات اليوم: {today_text} {self.currency}")
-        
-        if latest:
-            latest_total_text = f"{latest['total_price']:.0f}" if latest['total_price'] == int(latest['total_price']) else f"{latest['total_price']:.2f}"
-            self.lbl_latest_sale.setText(
-                f"آخر عملية: #{latest['id']} - {latest['datetime']} - {latest_total_text} {self.currency}"
-            )
+        if latest_sale:
+            self.lbl_latest_sale.setText(f"آخر عملية: #{latest_sale['id']} - {fmt_money(latest_sale['total_price'])} {self.currency} - {latest_sale['datetime']}")
         else:
             self.lbl_latest_sale.setText("آخر عملية: -")
-
+        
         # Load sales table
         sales = models.get_sales()
         self.tbl_sales.setRowCount(0)
-        
         for s in sales:
             row = self.tbl_sales.rowCount()
             self.tbl_sales.insertRow(row)
             self.tbl_sales.setItem(row, 0, QTableWidgetItem(str(s["id"])))
             self.tbl_sales.setItem(row, 1, QTableWidgetItem(s["datetime"]))
-            price_text = f"{s['total_price']:.0f}" if s['total_price'] == int(s['total_price']) else f"{s['total_price']:.2f}"
-            self.tbl_sales.setItem(row, 2, QTableWidgetItem(f"{price_text} {self.currency}"))
-            self.tbl_sales.setRowHeight(row, 35)
-
-        # Clear details table
-        self.tbl_sale_details.setRowCount(0)
+            self.tbl_sales.setItem(row, 2, QTableWidgetItem(fmt_money(s["total_price"])))
+        
         self._update_table_responsiveness()
 
     def _sales_view_selected(self):
-        """View details of selected sale"""
         row = self._selected_row(self.tbl_sales)
         if row is None:
             return
-            
+        
         sale_id = int(self.tbl_sales.item(row, 0).text())
         details = models.get_sale_details(sale_id)
         
         self.tbl_sale_details.setRowCount(0)
         for d in details:
-            r = self.tbl_sale_details.rowCount()
-            self.tbl_sale_details.insertRow(r)
-            
-            self.tbl_sale_details.setItem(r, 0, QTableWidgetItem(str(d["id"])))
-            
-            # Name with larger font
-            name_item = QTableWidgetItem(d["name"])
-            name_font = QFont(self.arabic_font.family(), 13, QFont.Bold)
-            name_item.setFont(name_font)
-            self.tbl_sale_details.setItem(r, 1, name_item)
-            
-            # Format numbers without unnecessary decimals
-            qty_text = f"{d['quantity']:.0f}" if d['quantity'] == int(d['quantity']) else f"{d['quantity']:.1f}"
-            price_text = f"{d['price_each']:.0f}" if d['price_each'] == int(d['price_each']) else f"{d['price_each']:.2f}"
-            subtotal_text = f"{d['subtotal']:.0f}" if d['subtotal'] == int(d['subtotal']) else f"{d['subtotal']:.2f}"
-            
-            self.tbl_sale_details.setItem(r, 2, QTableWidgetItem(qty_text))
-            self.tbl_sale_details.setItem(r, 3, QTableWidgetItem(f"{price_text} {self.currency}"))
-            self.tbl_sale_details.setItem(r, 4, QTableWidgetItem(f"{subtotal_text} {self.currency}"))
-            self.tbl_sale_details.setItem(r, 5, QTableWidgetItem(d["barcode"] or ""))  # Hidden barcode column
-            
-            self.tbl_sale_details.setRowHeight(r, 40)
-            
+            row = self.tbl_sale_details.rowCount()
+            self.tbl_sale_details.insertRow(row)
+            self.tbl_sale_details.setItem(row, 0, QTableWidgetItem(str(d["id"])))
+            self.tbl_sale_details.setItem(row, 1, QTableWidgetItem(d["name"]))
+            self.tbl_sale_details.setItem(row, 2, QTableWidgetItem(fmt_qty(d["quantity"])))
+            self.tbl_sale_details.setItem(row, 3, QTableWidgetItem(fmt_money(d["price_each"])))
+            self.tbl_sale_details.setItem(row, 4, QTableWidgetItem(fmt_money(d["subtotal"])))
+            self.tbl_sale_details.setItem(row, 5, QTableWidgetItem(d["barcode"] or ""))
+        
         self._update_table_responsiveness()
 
     def _sales_delete_selected(self):
-        """Delete selected sale with stock restoration"""
         row = self._selected_row(self.tbl_sales)
         if row is None:
-            self.msg("تنبيه", "اختر عملية لحذفها.")
+            self.msg("تنبيه", "اختر عملية للحذف.")
             return
-            
+        
         sale_id = int(self.tbl_sales.item(row, 0).text())
-        confirm = QMessageBox.question(
-            self, "تأكيد", 
-            "هل تريد حذف العملية؟\nسيتم إرجاع الكميات للمخزون.",
-            QMessageBox.Yes | QMessageBox.No
-        )
+        confirm = QMessageBox.question(self, "تأكيد", "سيتم حذف العملية وإرجاع المخزون.\nهل أنت متأكد؟")
         
         if confirm == QMessageBox.Yes:
             try:
                 models.delete_sale(sale_id, restock=True)
+                self.msg("تم", "تم حذف العملية وإرجاع المخزون.")
                 self._load_sales_tab()
                 self._load_stock_table()
-                self.msg("تم", "تم حذف العملية وإرجاع المخزون بنجاح.")
             except Exception as e:
                 QMessageBox.warning(self, "خطأ", f"تعذر حذف العملية:\n{e}")
 
-
-    # ---------- Utility Methods ----------
+    # Utility
     def _selected_row(self, table):
-        """Get selected row index from table"""
         rows = table.selectionModel().selectedRows()
         if not rows:
             return None

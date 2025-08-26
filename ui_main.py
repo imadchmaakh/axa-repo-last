@@ -1,9 +1,9 @@
-# ui_main.py
+# ui_main.py (Part 1 - Stock Tab)
 from PyQt5.QtWidgets import (
     QWidget, QTabWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QComboBox, QDoubleSpinBox, QFileDialog, QTableWidget, QTableWidgetItem,
     QGroupBox, QMessageBox, QHeaderView, QAbstractItemView, QFrame, QTextEdit,
-    QSizePolicy, QSpacerItem
+    QSizePolicy, QSpacerItem, QCheckBox
 )
 from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QPixmap, QFont, QIcon, QFontDatabase
@@ -71,14 +71,7 @@ class MainUI(QWidget):
         self._build_sales_tab()
         self._build_settings_tab()
 
-        # Tab icons (you'll need to create these files)
-        # Required image files and sizes:
-        # assets/logo/app_icon.png (32x32 or 48x48)
-        # assets/logo/tab_bill.png (24x24)
-        # assets/logo/tab_stock.png (24x24)
-        # assets/logo/tab_sales.png (24x24)
-        # assets/logo/tab_settings.png (24x24)
-        
+        # Tab icons
         try:
             self.tabs.setTabIcon(0, QIcon("assets/logo/tab_bill.png"))
             self.tabs.setTabIcon(1, QIcon("assets/logo/tab_stock.png"))
@@ -90,7 +83,6 @@ class MainUI(QWidget):
 
     def _setup_arabic_fonts(self):
         """Setup proper Arabic font support"""
-        # Try to load system Arabic fonts
         arabic_fonts = [
             "Tahoma",           # Good Arabic support
             "Arial Unicode MS", # Comprehensive Unicode support
@@ -115,6 +107,7 @@ class MainUI(QWidget):
         
         # Set application-wide font
         self.setFont(self.arabic_font)
+        
     def resizeEvent(self, event):
         """Handle window resize events to maintain responsive layout"""
         super().resizeEvent(event)
@@ -197,6 +190,7 @@ class MainUI(QWidget):
         self.in_price.setDecimals(2)
         self.in_price.setMinimumHeight(45)
         self.in_price.setMinimumWidth(120)
+        self.in_price.setEnabled(False)  # Initially disabled
 
         self.in_qty = QDoubleSpinBox()
         self.in_qty.setMaximum(10**9)
@@ -210,11 +204,10 @@ class MainUI(QWidget):
         self.in_unit.setMinimumHeight(45)
         self.in_unit.setMinimumWidth(100)
 
-        self.chk_manual = QComboBox()
-        self.chk_manual.addItems(["سعر من قاعدة البيانات", "سعر يدوي"])
-        self.chk_manual.setCurrentIndex(0)
+        # Manual price checkbox instead of combobox
+        self.chk_manual = QCheckBox("سعر يدوي")
         self.chk_manual.setMinimumHeight(45)
-        self.chk_manual.setMinimumWidth(180)
+        self.chk_manual.setMinimumWidth(100)
 
         row3.addWidget(QLabel("السعر:"), 0)
         row3.addWidget(self.in_price, 1)
@@ -224,6 +217,11 @@ class MainUI(QWidget):
         row3.addWidget(self.in_unit, 1)
         row3.addWidget(self.chk_manual, 1)
         input_layout.addLayout(row3)
+
+        # Add search hint label
+        hint_label = QLabel("💡 نصيحة: يمكنك البحث بالباركود أو كتابة أول كلمة من اسم المنتج")
+        hint_label.setStyleSheet("color: #60a5fa; font-size: 10pt; font-style: italic;")
+        input_layout.addWidget(hint_label)
 
         # Action buttons row
         row4 = QHBoxLayout()
@@ -243,9 +241,16 @@ class MainUI(QWidget):
         self.btn_bill_save.setMinimumHeight(45)
         self.btn_bill_save.setMinimumWidth(130)
 
+        # New button for adding custom items
+        self.btn_add_custom = QPushButton("إضافة منتج جديد")
+        self.btn_add_custom.setObjectName("warning")
+        self.btn_add_custom.setMinimumHeight(45)
+        self.btn_add_custom.setMinimumWidth(150)
+
         row4.addWidget(self.btn_bill_add)
         row4.addWidget(self.btn_bill_remove)
         row4.addStretch()
+        row4.addWidget(self.btn_add_custom)
         row4.addWidget(self.btn_bill_save)
         input_layout.addLayout(row4)
 
@@ -436,7 +441,7 @@ class MainUI(QWidget):
 
         outer.addWidget(form_group)
 
-        # Stock table
+        # Stock table with pagination
         table_group = QGroupBox("قائمة المخزون")
         table_layout = QVBoxLayout(table_group)
 
@@ -469,10 +474,31 @@ class MainUI(QWidget):
         self.tbl_stock.setEditTriggers(QAbstractItemView.NoEditTriggers)
         
         table_layout.addWidget(self.tbl_stock)
+        
+        # Pagination controls for stock
+        pagination_layout = QHBoxLayout()
+        
+        self.btn_stk_prev = QPushButton("السابق")
+        self.btn_stk_prev.setObjectName("secondary")
+        self.btn_stk_prev.setMinimumHeight(35)
+        
+        self.lbl_stk_page = QLabel("الصفحة 1 من 1")
+        self.lbl_stk_page.setAlignment(Qt.AlignCenter)
+        
+        self.btn_stk_next = QPushButton("التالي")
+        self.btn_stk_next.setObjectName("secondary")
+        self.btn_stk_next.setMinimumHeight(35)
+        
+        pagination_layout.addWidget(self.btn_stk_prev)
+        pagination_layout.addWidget(self.lbl_stk_page)
+        pagination_layout.addWidget(self.btn_stk_next)
+        
+        table_layout.addLayout(pagination_layout)
+        
         outer.addWidget(table_group)
 
         self.tabs.addTab(tab, "المخزون")
-
+        # ui_main.py (Part 2 - Sales and Settings Tabs)
     # ---------- Sales Tab ----------
     def _build_sales_tab(self):
         tab = QWidget()
@@ -516,7 +542,7 @@ class MainUI(QWidget):
         
         outer.addWidget(kpi_group)
 
-        # Sales table
+        # Sales table with pagination
         sales_group = QGroupBox("قائمة المبيعات")
         sales_layout = QVBoxLayout(sales_group)
 
@@ -536,6 +562,26 @@ class MainUI(QWidget):
         self.tbl_sales.setMaximumHeight(250)
         
         sales_layout.addWidget(self.tbl_sales)
+
+        # Pagination controls for sales
+        sales_pagination_layout = QHBoxLayout()
+        
+        self.btn_sales_prev = QPushButton("السابق")
+        self.btn_sales_prev.setObjectName("secondary")
+        self.btn_sales_prev.setMinimumHeight(35)
+        
+        self.lbl_sales_page = QLabel("الصفحة 1 من 1")
+        self.lbl_sales_page.setAlignment(Qt.AlignCenter)
+        
+        self.btn_sales_next = QPushButton("التالي")
+        self.btn_sales_next.setObjectName("secondary")
+        self.btn_sales_next.setMinimumHeight(35)
+        
+        sales_pagination_layout.addWidget(self.btn_sales_prev)
+        sales_pagination_layout.addWidget(self.lbl_sales_page)
+        sales_pagination_layout.addWidget(self.btn_sales_next)
+        
+        sales_layout.addLayout(sales_pagination_layout)
 
         # Sales action buttons
         sales_btn_row = QHBoxLayout()

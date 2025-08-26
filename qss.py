@@ -1,3 +1,4 @@
+# qss.py (fixed)
 # Dark theme with colorful accents - Professional look
 APP_QSS = """
 /* Global Styles */
@@ -152,7 +153,6 @@ QPushButton {
 
 QPushButton:hover { 
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #16a34a, stop:1 #15803d);
-    transform: translateY(-1px);
 }
 
 QPushButton:pressed {

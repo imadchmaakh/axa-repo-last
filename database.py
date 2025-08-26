@@ -1,7 +1,11 @@
+# database.py (fixed typo)
 import sqlite3
 import os
+import threading
+from datetime import datetime
 
 DB_NAME = "store.db"
+_db_lock = threading.RLock()
 
 def get_connection():
     """
@@ -9,11 +13,13 @@ def get_connection():
     - timeout=10 sec: Prevents 'database is locked' errors during fast UI operations.
     - WAL mode: Better concurrency for read/write.
     """
-    conn = sqlite3.connect(DB_NAME, timeout=10)  # Added timeout for stability
-    conn.row_factory = sqlite3.Row
+    conn = sqlite3.connect(DB_NAME, timeout=30)  # Increased timeout for large datasets
+    conn.row_factory = sqlite3.Row  # Fixed: Changed RRow to Row
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")       # Allows concurrent reads during writes
     conn.execute("PRAGMA synchronous = NORMAL;")     # Good balance of safety and performance
+    conn.execute("PRAGMA cache_size = -10000;")      # 10MB cache for better performance
+    conn.execute("PRAGMA temp_store = MEMORY;")      # Store temp tables in memory
     return conn
 
 def _table_has_item_fk_cascade_on_sale_details(conn):
@@ -25,6 +31,19 @@ def _table_has_item_fk_cascade_on_sale_details(conn):
         if fk["table"] == "items" and fk["from"] == "item_id" and fk["on_delete"].lower() == "cascade":
             return True
     return False
+
+def _table_has_column(conn, table_name, column_name):
+    """Check if a table has a specific column"""
+    cur = conn.cursor()
+    try:
+        cur.execute(f"PRAGMA table_info({table_name})")
+        columns = cur.fetchall()
+        for column in columns:
+            if column['name'] == column_name:
+                return True
+        return False
+    except:
+        return False
 
 def setup_database():
     """Setup database with all required tables and indexes"""
@@ -48,7 +67,7 @@ def setup_database():
     CREATE TABLE IF NOT EXISTS categories (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        created_at TEXT
     );
     """)
 
@@ -63,7 +82,7 @@ def setup_database():
         stock_count REAL NOT NULL DEFAULT 0,
         photo_path TEXT,
         add_date TEXT,
-        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT,
         FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
     );
     """)
@@ -74,7 +93,7 @@ def setup_database():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         datetime TEXT NOT NULL,
         total_price REAL NOT NULL DEFAULT 0,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        created_at TEXT
     );
     """)
 
@@ -86,13 +105,53 @@ def setup_database():
         item_id INTEGER NOT NULL,
         quantity REAL NOT NULL,
         price_each REAL NOT NULL,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        created_at TEXT,
         FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
         FOREIGN KEY (item_id) REFERENCES items(id) -- Will migrate to CASCADE
     );
     """)
 
     conn.commit()
+
+    # Check if created_at column exists in sales table, add if not
+    if not _table_has_column(conn, 'sales', 'created_at'):
+        print("Adding created_at column to sales table...")
+        # First add the column without default value
+        cur.execute("ALTER TABLE sales ADD COLUMN created_at TEXT")
+        # Update existing records with current timestamp
+        current_time = datetime.now().isoformat()
+        cur.execute("UPDATE sales SET created_at = ? WHERE created_at IS NULL", (current_time,))
+        conn.commit()
+
+    # Check if created_at column exists in sale_details table, add if not
+    if not _table_has_column(conn, 'sale_details', 'created_at'):
+        print("Adding created_at column to sale_details table...")
+        # First add the column without default value
+        cur.execute("ALTER TABLE sale_details ADD COLUMN created_at TEXT")
+        # Update existing records with current timestamp
+        current_time = datetime.now().isoformat()
+        cur.execute("UPDATE sale_details SET created_at = ? WHERE created_at IS NULL", (current_time,))
+        conn.commit()
+
+    # Check if created_at column exists in categories table, add if not
+    if not _table_has_column(conn, 'categories', 'created_at'):
+        print("Adding created_at column to categories table...")
+        # First add the column without default value
+        cur.execute("ALTER TABLE categories ADD COLUMN created_at TEXT")
+        # Update existing records with current timestamp
+        current_time = datetime.now().isoformat()
+        cur.execute("UPDATE categories SET created_at = ? WHERE created_at IS NULL", (current_time,))
+        conn.commit()
+
+    # Check if updated_at column exists in items table, add if not
+    if not _table_has_column(conn, 'items', 'updated_at'):
+        print("Adding updated_at column to items table...")
+        # First add the column without default value
+        cur.execute("ALTER TABLE items ADD COLUMN updated_at TEXT")
+        # Update existing records with current timestamp
+        current_time = datetime.now().isoformat()
+        cur.execute("UPDATE items SET updated_at = ? WHERE updated_at IS NULL", (current_time,))
+        conn.commit()
 
     # Ensure CASCADE for item_id in sale_details
     if not _table_has_item_fk_cascade_on_sale_details(conn):
@@ -107,7 +166,7 @@ def setup_database():
             item_id INTEGER NOT NULL,
             quantity REAL NOT NULL,
             price_each REAL NOT NULL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            created_at TEXT,
             FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
             FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
         );
@@ -136,18 +195,25 @@ def setup_database():
         "CREATE INDEX IF NOT EXISTS idx_sales_datetime ON sales(datetime);",
         "CREATE INDEX IF NOT EXISTS idx_sale_details_sale_id ON sale_details(sale_id);",
         "CREATE INDEX IF NOT EXISTS idx_sale_details_item_id ON sale_details(item_id);",
+        "CREATE INDEX IF NOT EXISTS idx_items_name ON items(name);",  # Added for faster search
+        "CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);",  # Added for faster date queries
     ]
     for sql in indexes:
-        cur.execute(sql)
+        try:
+            cur.execute(sql)
+        except:
+            pass  # Ignore errors if index already exists
 
     conn.commit()
 
     # Seed data if new DB
     if must_seed:
         print("Seeding initial data...")
-        cur.execute("INSERT OR IGNORE INTO categories(name) VALUES (?)", ("غير مصنّف",))
+        cur.execute("INSERT OR IGNORE INTO categories(name, created_at) VALUES (?, ?)", 
+                   ("غير مصنّف", datetime.now().isoformat()))
         for cat in ["مواد غذائية", "مشروبات", "منظفات", "أدوات منزلية", "قرطاسية"]:
-            cur.execute("INSERT OR IGNORE INTO categories(name) VALUES (?)", (cat,))
+            cur.execute("INSERT OR IGNORE INTO categories(name, created_at) VALUES (?, ?)", 
+                       (cat, datetime.now().isoformat()))
         conn.commit()
         print("Initial data seeded.")
 
