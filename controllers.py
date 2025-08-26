@@ -378,9 +378,8 @@ class Controller(MainUI):
         if len(text) > 2:
             items = models.search_items_by_name(text)
             if items:
-                # Only set barcode, don't overwrite the name field
+                # Only set barcode and price, don't overwrite the name field
                 self.in_barcode.setText(items[0]["barcode"] or "")
-                # Fill price but keep the typed name
                 if not self.chk_manual.isChecked():
                     self.in_price.setValue(float(items[0]["price"]))
 
@@ -426,7 +425,10 @@ class Controller(MainUI):
                     self.in_price.setFocus()
 
     def _bill_fill_from_item(self, item):
-        self.in_name.setText(item["name"])
+        # Only set name if the field is empty or contains barcode
+        current_name = self.in_name.text().strip()
+        if not current_name or current_name == self.in_barcode.text().strip():
+            self.in_name.setText(item["name"])
         
         # Set price based on manual mode
         if self.chk_manual.isChecked():
