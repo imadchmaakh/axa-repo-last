@@ -87,6 +87,8 @@ class Controller(MainUI):
         self.btn_sale_refresh.clicked.connect(self._load_sales_tab)
         self.btn_sale_view.clicked.connect(self._sales_view_selected)
         self.btn_sale_delete.clicked.connect(self._sales_delete_selected)
+        self.btn_sale_delete_item.clicked.connect(self._sales_delete_item)
+        self.btn_sale_update_item.clicked.connect(self._sales_update_item)
         self.tbl_sales.itemSelectionChanged.connect(self._sales_view_selected)
 
         # Settings
@@ -372,12 +374,15 @@ class Controller(MainUI):
         self._bill_find()
 
     def _on_name_text_changed(self, text):
-        # Auto-search when typing in name field
+        # Auto-search when typing in name field - don't overwrite name field
         if len(text) > 2:
             items = models.search_items_by_name(text)
             if items:
+                # Only set barcode, don't overwrite the name field
                 self.in_barcode.setText(items[0]["barcode"] or "")
-                self._bill_fill_from_item(items[0])
+                # Fill price but keep the typed name
+                if not self.chk_manual.isChecked():
+                    self.in_price.setValue(float(items[0]["price"]))
 
     def _toggle_manual_price(self, state):
         """Enable/disable price field based on manual price checkbox"""
@@ -777,8 +782,93 @@ class Controller(MainUI):
                 self.msg("تم", "تم حذف العملية وإرجاع المخزون.")
                 self._load_sales_tab()
                 self._load_stock_table()
+                # Clear sale details table
+                self.tbl_sale_details.setRowCount(0)
             except Exception as e:
                 QMessageBox.warning(self, "خطأ", f"تعذر حذف العملية:\n{e}")
+
+    def _sales_delete_item(self):
+        """Delete a specific item from a sale"""
+        sale_row = self._selected_row(self.tbl_sales)
+        detail_row = self._selected_row(self.tbl_sale_details)
+        
+        if sale_row is None:
+            self.msg("تنبيه", "اختر عملية أولاً.")
+            return
+            
+        if detail_row is None:
+            self.msg("تنبيه", "اختر صنف من تفاصيل العملية للحذف.")
+            return
+        
+        sale_id = int(self.tbl_sales.item(sale_row, 0).text())
+        detail_id = int(self.tbl_sale_details.item(detail_row, 0).text())
+        item_name = self.tbl_sale_details.item(detail_row, 1).text()
+        quantity = float(self.tbl_sale_details.item(detail_row, 2).text())
+        
+        confirm = QMessageBox.question(
+            self, 
+            "تأكيد", 
+            f"سيتم حذف '{item_name}' من العملية وإرجاع الكمية ({quantity}) للمخزون.\nهل أنت متأكد؟"
+        )
+        
+        if confirm == QMessageBox.Yes:
+            try:
+                models.delete_sale_detail(detail_id, restock=True)
+                self.msg("تم", f"تم حذف '{item_name}' من العملية وإرجاع المخزون.")
+                self._load_sales_tab()
+                self._load_stock_table()
+                # Refresh the details for the current sale
+                self._sales_view_selected()
+            except Exception as e:
+                QMessageBox.warning(self, "خطأ", f"تعذر حذف الصنف:\n{e}")
+
+    def _sales_update_item(self):
+        """Update quantity of a specific item in a sale"""
+        sale_row = self._selected_row(self.tbl_sales)
+        detail_row = self._selected_row(self.tbl_sale_details)
+        
+        if sale_row is None:
+            self.msg("تنبيه", "اختر عملية أولاً.")
+            return
+            
+        if detail_row is None:
+            self.msg("تنبيه", "اختر صنف من تفاصيل العملية للتعديل.")
+            return
+        
+        sale_id = int(self.tbl_sales.item(sale_row, 0).text())
+        detail_id = int(self.tbl_sale_details.item(detail_row, 0).text())
+        item_name = self.tbl_sale_details.item(detail_row, 1).text()
+        current_qty = float(self.tbl_sale_details.item(detail_row, 2).text())
+        price_each = float(self.tbl_sale_details.item(detail_row, 3).text())
+        
+        # Get new quantity from user
+        new_qty, ok = QInputDialog.getDouble(
+            self, 
+            "تعديل الكمية", 
+            f"الكمية الحالية لـ '{item_name}': {current_qty}\nأدخل الكمية الجديدة:",
+            current_qty, 0.001, 999999, 3
+        )
+        
+        if ok and new_qty != current_qty:
+            try:
+                # Calculate the difference
+                qty_diff = new_qty - current_qty
+                
+                # Update the sale detail
+                models.update_sale_detail(detail_id, new_qty, price_each)
+                
+                # Adjust stock (negative diff means we took more from stock)
+                detail = models.get_sale_detail_by_id(detail_id)
+                if detail:
+                    models.adjust_stock(detail["item_id"], -qty_diff)
+                
+                self.msg("تم", f"تم تعديل كمية '{item_name}' من {current_qty} إلى {new_qty}.")
+                self._load_sales_tab()
+                self._load_stock_table()
+                # Refresh the details for the current sale
+                self._sales_view_selected()
+            except Exception as e:
+                QMessageBox.warning(self, "خطأ", f"تعذر تعديل الكمية:\n{e}")
 
     # Utility
     def _selected_row(self, table):
